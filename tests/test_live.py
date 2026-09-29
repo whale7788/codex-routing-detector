@@ -307,9 +307,9 @@ class ProxyEndToEnd(unittest.TestCase):
         tls.close()
         self.assertEqual(self._drain(1, timeout=1), [])
 
-    def test_non_connect_requests_are_refused(self):
+    def test_non_http_requests_are_refused(self):
         raw = socket.create_connection(("127.0.0.1", self.proxy.port), timeout=5)
-        raw.sendall(b"GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        raw.sendall(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
         self.assertTrue(recv_head(raw).startswith(b"HTTP/1.1 405"))
         raw.close()
 

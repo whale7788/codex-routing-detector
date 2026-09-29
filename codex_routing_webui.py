@@ -93,6 +93,12 @@ UI: Dict[str, Dict[str, str]] = {
         "chipWarn": "확인 필요",
         "statusIdle": "준비됨", "statusDone": "{secs}초 소요",
         "liveStart": "모니터링 시작", "liveStop": "중지",
+        "liveCli": "CLI 세션", "liveDesktop": "Desktop 앱",
+        "desktopIdleBrief": "Desktop 앱을 다시 시작한 뒤 새 요청을 이 화면에서 확인하세요.",
+        "desktopConfirmTitle": "Desktop 모니터링을 시작할까요?",
+        "desktopConfirmBody": "Windows 사용자 프록시와 환경 변수를 잠시 변경하고 임시 인증서를 신뢰 저장소에 추가합니다. 기존 프록시는 계속 사용합니다. 시작한 뒤 Codex Desktop을 다시 시작하세요. 중지하면 원래 설정으로 복원합니다.",
+        "desktopStopBody": "Windows 프록시 설정과 인증서를 원래대로 되돌립니다. Desktop 앱은 계속 열려 있습니다. 중지할까요?",
+        "desktopCloseBody": "창을 닫으면 Windows 프록시 설정과 인증서를 원래대로 되돌립니다. Desktop 앱은 계속 열려 있습니다. 닫을까요?",
         "liveChipOff": "꺼짐", "liveChipOn": "감시 중", "liveChipBad": "바꿔치기", "liveChipWarn": "확인 필요",
         "liveStatusOff": "대기 중",
         "helpUsage": "기본 사용법", "helpTerms": "용어 설명", "helpGuide": "라이브 모니터 안내",
@@ -126,6 +132,12 @@ UI: Dict[str, Dict[str, str]] = {
         "chipWarn": "Needs a look",
         "statusIdle": "ready", "statusDone": "done in {secs}s",
         "liveStart": "Start monitoring", "liveStop": "Stop",
+        "liveCli": "CLI session", "liveDesktop": "Desktop app",
+        "desktopIdleBrief": "Restart Codex Desktop after starting, then new requests will appear here.",
+        "desktopConfirmTitle": "Watch Codex Desktop?",
+        "desktopConfirmBody": "This temporarily changes your Windows user proxy and proxy environment variables and trusts a temporary certificate. Your existing proxy stays upstream. Restart Codex Desktop after starting. Stop restores the original settings.",
+        "desktopStopBody": "Restore the original Windows proxy settings and certificate? Codex Desktop will stay open.",
+        "desktopCloseBody": "Closing restores the original Windows proxy settings and certificate. Codex Desktop will stay open. Close?",
         "liveChipOff": "Off", "liveChipOn": "Watching", "liveChipBad": "Rerouted", "liveChipWarn": "Needs a look",
         "liveStatusOff": "idle",
         "helpUsage": "How to use", "helpTerms": "Glossary", "helpGuide": "Live monitor guide",
@@ -536,7 +548,9 @@ button:disabled { cursor: default; }
         <div class="brief" id="l-brief"></div>
         <div class="actionrow">
           <button class="cta" id="l-cta"></button>
-          <span class="folderline"><span id="l-folderlabel"></span> <span class="path" id="l-folder" title=""></span></span>
+          <button class="quietbtn" id="l-mode-cli"></button>
+          <button class="quietbtn" id="l-mode-desktop"></button>
+          <span class="folderline" id="l-folderline"><span id="l-folderlabel"></span> <span class="path" id="l-folder" title=""></span></span>
         </div>
       </div>
     </div>
@@ -768,6 +782,13 @@ function render(vm) {
   lcta.textContent = l.on ? s.liveStop : s.liveStart;
   lcta.classList.toggle("stop", l.on);
   lcta.disabled = !l.canStart && !l.on;
+  $("l-mode-cli").textContent = s.liveCli;
+  $("l-mode-desktop").textContent = s.liveDesktop;
+  $("l-mode-cli").disabled = l.on;
+  $("l-mode-desktop").disabled = l.on || !l.desktopAvailable;
+  $("l-mode-cli").classList.toggle("on", l.mode === "cli");
+  $("l-mode-desktop").classList.toggle("on", l.mode === "desktop");
+  $("l-folderline").classList.toggle("hidden", l.mode === "desktop");
   $("l-folder").textContent = l.folder;
   $("l-folder").title = l.folderFull || l.folder;
   $("lv-model").textContent = l.cfgModel || "—";
@@ -780,7 +801,7 @@ function render(vm) {
   renderRows($("l-rows"), l.rows, lAnimFrom);
   crd.prevRows.live = l.rows.length;
   $("l-empty").classList.toggle("hidden", l.rows.length > 0);
-  $("l-empty-text").textContent = s.liveEmpty;
+  $("l-empty-text").textContent = l.mode === "desktop" ? s.desktopIdleBrief : s.liveEmpty;
   $("l-empty-img").src = (l.tone === "warn") ? window.MOOD_ERROR_SRC : window.MOOD_IDLE_SRC;
   $("btn-livecopy").disabled = !l.canCopy; $("btn-liveclear").disabled = !l.canClear;
   $("l-dpre").textContent = l.notes || s.detailsEmpty;
@@ -978,7 +999,8 @@ function showStopConfirm(mode) {  /* mode: "stop" | "close" */
   const closing = mode === "close";
   showConfirm({
     title: closing ? s.closeTitle : s.liveStop,
-    body: closing ? g.live_close_confirm : g.live_stop_confirm,
+    body: crd.vm.live.mode === "desktop" ? (closing ? s.desktopCloseBody : s.desktopStopBody)
+         : (closing ? g.live_close_confirm : g.live_stop_confirm),
     ok: closing ? s.close : s.liveStop, cancel: s.cancel, checkbox: null,
     onOk: () => { call(mode === "close" ? api().confirm_close() : api().stop_live_confirmed()); },
   });
@@ -1055,6 +1077,8 @@ function wire() {
       onOk: (skip) => call(api().start_live_confirmed(skip)),
     });
   });
+  $("l-mode-cli").onclick = () => call(api().set_live_mode("cli"));
+  $("l-mode-desktop").onclick = () => call(api().set_live_mode("desktop"));
   $("l-folder").onclick = () => { if (!crd.vm.live.on) call(api().pick_live_dir()); };
   $("cfgpill").onclick = () => call(api().open_config());
   $("btn-livecopy").onclick = () => call(api().copy_live_report()).then((r) => { if (r) copyText(r.text, "live", r.msg); });
@@ -1142,6 +1166,7 @@ class WebApp:
 
         # live state
         self.monitor: Optional[live.LiveMonitor] = None
+        self.live_mode = "cli"
         self.agg = live.LiveAggregator()
         self.live_lines: List[str] = []
         self.live_ended: Optional[str] = None
@@ -1399,7 +1424,8 @@ class WebApp:
         copyable report) keep the session's verdicts until 지우기/Clear."""
         running = self.monitor is not None
         if not running:
-            return "idle", self.u("liveChipOff"), self.v("liveIdleHead"), self.v("liveIdleBrief")
+            brief = self.u("desktopIdleBrief") if self.live_mode == "desktop" else self.v("liveIdleBrief")
+            return "idle", self.u("liveChipOff"), self.v("liveIdleHead"), brief
         rows = self.agg.rows
         requested = ", ".join(sorted({r.requested for r in rows if r.requested})) or "?"
         # A response that is still streaming has no final verdict yet (UNKNOWN): it is neither an
@@ -1445,6 +1471,8 @@ class WebApp:
     def _live_status_line(self) -> str:
         mon = self.monitor
         if mon is not None and mon.proxy is not None:
+            if isinstance(mon, live.DesktopMonitor):
+                return f"Desktop · 127.0.0.1:{mon.proxy.port}"
             pid = (mon.proc.pid if mon.proc is not None else 0) or "?"
             return f"pid {pid} · 127.0.0.1:{mon.proxy.port}"
         if self.live_ended is None:
@@ -1460,6 +1488,8 @@ class WebApp:
         model, effort, src = self.cfg_live
         return {
             "on": running, "tone": tone, "chip": chip, "head": head, "brief": brief,
+            "mode": self.live_mode,
+            "desktopAvailable": os.name == "nt",
             "status": self._live_status_line(),
             "rows": self._live_rows(), "notes": "\n".join(self.live_lines),
             "cfgModel": model or self.s("live_cfg_none"), "cfgEffort": effort or self.s("live_cfg_none"),
@@ -1693,6 +1723,13 @@ class WebApp:
             self._open_path(self.result.outdir)
 
     # ------------------------------------------------------------ js_api: live
+    def set_live_mode(self, mode: str) -> None:
+        with self.lock:
+            if self.monitor is None and mode in ("cli", "desktop") and (mode != "desktop" or os.name == "nt"):
+                self.live_mode = mode
+                self._clear_live()
+        self.push()
+
     def request_live(self) -> Optional[dict]:
         """Start/stop button. Returns a dialog description, or None when handled directly."""
         with self.lock:
@@ -1708,6 +1745,10 @@ class WebApp:
                 self._live_note(self.s("live_needs_crypto"))
                 self.push()
                 return None
+            if self.live_mode == "desktop":
+                return {"mode": "start", "title": self.u("desktopConfirmTitle"),
+                        "body": self.u("desktopConfirmBody"), "checkbox": None,
+                        "ok": self.u("liveStart"), "cancel": self.u("cancel")}
             # The live dialog asks for consent to the local proxy and certificate, so only its own
             # "don't ask again" (skip_confirm_live) skips it, not the check dialog's (skip_confirm).
             ask = self.confirm_live and not self.settings.get("skip_confirm_live")
@@ -1720,7 +1761,7 @@ class WebApp:
 
     def start_live_confirmed(self, skip: bool) -> None:
         with self.lock:
-            if skip:
+            if skip and self.live_mode == "cli":
                 self.settings["skip_confirm_live"] = True
                 tkgui.save_settings(self.settings)
             self._start_live()
@@ -1739,13 +1780,16 @@ class WebApp:
     def _start_live(self) -> None:
         if self.monitor is not None:
             return
-        codex, how = cmc.find_codex(self.codex_path)
-        if not codex:
-            self._live_note(f"codex binary not found ({how}). " + self.s("codex_hint"))
-            self.push()
-            return
+        if self.live_mode == "desktop":
+            mon = live.DesktopMonitor()
+        else:
+            codex, how = cmc.find_codex(self.codex_path)
+            if not codex:
+                self._live_note(f"codex binary not found ({how}). " + self.s("codex_hint"))
+                self.push()
+                return
+            mon = live.LiveMonitor(codex, self.live_dir, launcher=self.launcher)
         self._clear_live()
-        mon = live.LiveMonitor(codex, self.live_dir, launcher=self.launcher)
         try:
             mon.start()
         except Exception as e:
@@ -1754,7 +1798,8 @@ class WebApp:
             return
         self.monitor = mon
         self.live_ended = None
-        self._live_note(f"{self.s('codex')}: {' '.join(cmc.display_path(c) for c in codex)} ({how})")
+        if self.live_mode == "cli":
+            self._live_note(f"{self.s('codex')}: {' '.join(cmc.display_path(c) for c in codex)} ({how})")
         threading.Thread(target=self._live_pump, args=(mon,), daemon=True).start()
         self.push()
 
@@ -1816,8 +1861,8 @@ class WebApp:
         mon = self.monitor
         if mon is None:
             return
-        self.monitor = None
         mon.stop()
+        self.monitor = None
         self.live_ended = how
 
     def _live_note(self, text: str) -> None:
@@ -1969,7 +2014,7 @@ class JsApi:
 
     _METHODS = ("init", "set_lang", "guide_closed", "open_repo", "open_update", "open_config",
                 "request_check", "run_check_confirmed", "cancel_check", "set_option", "pick_codex",
-                "copy_report", "save_json", "open_logs", "request_live", "start_live_confirmed",
+                "copy_report", "save_json", "open_logs", "set_live_mode", "request_live", "start_live_confirmed",
                 "stop_live_confirmed", "confirm_close", "pick_live_dir", "copy_live_report", "clear_live")
 
     def __init__(self, app: WebApp) -> None:
@@ -1985,6 +2030,10 @@ def feed_fake_live(app: WebApp) -> None:
 
 # ------------------------------------------------------------------ entry point
 def main(argv: Optional[List[str]] = None) -> int:
+    args = list(argv) if argv is not None else sys.argv[1:]
+    if len(args) == 2 and args[0] == "--desktop-watchdog":
+        import codex_routing_windows as windows
+        return windows.watchdog(Path(args[1]))
     ap = argparse.ArgumentParser(prog="codex-routing-detector-gui", add_help=True)
     ap.add_argument("--lang", default=None, choices=["en", "ko"], help="interface language (remembered)")
     ap.add_argument("--fake", action="store_true", help=argparse.SUPPRESS)
@@ -1999,7 +2048,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--no-auto-update", action="store_true",
                     help="show the NEW badge only; never download and replace this exe by itself")
     ap.add_argument("--updated-from", default=None, help=argparse.SUPPRESS)
-    a = ap.parse_args(argv)
+    a = ap.parse_args(args)
 
     def fall_back() -> int:
         args = list(argv) if argv is not None else sys.argv[1:]

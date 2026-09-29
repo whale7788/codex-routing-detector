@@ -3,10 +3,12 @@ page would render. No codex process is launched: run_capture() is replaced by th
 import json
 import os
 import pathlib
+import queue
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -175,6 +177,32 @@ class CheckFlow(WebUiBase):
 
 @unittest.skipUnless(crp.have_crypto(), "cryptography not installed")
 class LiveFlow(WebUiBase):
+    def test_desktop_mode_uses_its_own_monitor_and_dialog(self):
+        class FakeDesktopMonitor:
+            def __init__(self):
+                self.events = queue.Queue()
+                self.proxy = None
+                self.proc = None
+                self.active = False
+            def start(self):
+                self.proxy = type("Proxy", (), {"port": 12345})()
+                self.active = True
+            def codex_running(self):
+                return self.active
+            def stop(self):
+                self.active = False
+                self.proxy = None
+        self.app.set_live_mode("desktop")
+        self.assertEqual(self.app.build_vm()["live"]["mode"], "desktop")
+        with mock.patch.object(webui.live, "DesktopMonitor", FakeDesktopMonitor):
+            ask = self.app.request_live()
+            self.assertIn("Windows user proxy", ask["body"])
+            self.app.start_live_confirmed(skip=False)
+            self.assertIsInstance(self.app.monitor, FakeDesktopMonitor)
+            self.assertIn("Desktop", self.app.build_vm()["live"]["status"])
+            self.app.stop_live()
+        self.assertIsNone(self.app.monitor)
+
     def start(self):
         self.app.start_live(confirm=False)
         self.assertIsNotNone(self.app.monitor)

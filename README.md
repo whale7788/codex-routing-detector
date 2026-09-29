@@ -20,8 +20,8 @@ astra really the one answering? This little app asks the **server** and tells yo
 friendly sentence, which model you called and which model actually replied. 🐾
 
 - **Check**: press one button, wait about 30 seconds, and get the answer.
-- **Live monitor**: keeps an eye on your own Codex CLI session while you work, response by
-  response.
+- **Live monitor**: watches a Codex CLI session or, on Windows, newly restarted Codex Desktop
+  connections, response by response.
 
 ![Codex Routing Detector after a check](docs/screenshot.png)
 
@@ -52,8 +52,14 @@ between OK and rerouted within an hour), so check whenever it matters. ✨
   Then run `codex-routing-detector-gui` (window) or `codex-routing-detector` (terminal).
   Without pywebview you get a simpler tkinter window (`--tk` opens that one on purpose).
 
-You also need a Codex CLI or Codex Desktop that is signed in with ChatGPT. The live monitor
-needs the CLI.
+The Windows Desktop mode is on the `feature/desktop-monitor` branch of
+[`whale7788/codex-routing-detector`](https://github.com/whale7788/codex-routing-detector/tree/feature/desktop-monitor),
+not in the upstream release linked above. Install that branch with
+`pipx install "git+https://github.com/whale7788/codex-routing-detector.git@feature/desktop-monitor"`
+and `pipx inject codex-routing-detector pywebview`, or use the EXE built from that branch.
+
+You also need a Codex CLI or Codex Desktop that is signed in with ChatGPT. The CLI live monitor
+opens a new CLI session; the Desktop mode is available in the Windows web view.
 
 ## Quick start 🚀
 
@@ -94,8 +100,17 @@ away.
   monitor as well. Rows stay until you press **Clear**, and **Copy report** puts them on the
   clipboard.
 - The **?** button at the top right brings back the short guide.
-- **The Codex desktop app can't be watched**, because it doesn't take proxy settings from
-  another program. Desktop users can still use the Check tab.
+- **Windows Desktop mode:** select **Desktop app** in the live tab and press **Start monitoring**.
+  The app temporarily sets the Windows user proxy and proxy environment variables to its local
+  listener, and trusts a session certificate. Restart Codex Desktop after starting; requests on
+  already-open connections cannot be captured. Your previous HTTP proxy is used as the upstream
+  hop, so this also works with a local proxy such as v2rayN. **Stop** restores the original user
+  settings and removes the temporary certificate, without closing Desktop. A separate watchdog
+  restores them if the monitor exits unexpectedly.
+- Desktop mode reads Codex responses over WebSocket and HTTP/SSE. It displays the requested model
+  and the model named in the server response; traffic from other apps to non-OpenAI hosts is
+  passed through without decryption. If a request does not reach the local proxy or its response
+  has no model field, the app cannot label that request's route.
 - It was tested on Windows. On macOS and Linux the terminal opens on a best-effort basis, and
   **Stop** can't close it there, so close Codex yourself.
 

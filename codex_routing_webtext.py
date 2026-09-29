@@ -151,8 +151,7 @@ VERDICT: Dict[str, Dict[str, str]] = {
         "cancelledBrief": "The check was cancelled partway. Press **Check again** whenever you're ready.",
         "liveIdleHead": "The monitor is resting",
         "liveIdleBrief": "Press Start monitoring and a Codex CLI window opens. Every time it makes a request, I'll "
-                         "add a line here with the model that really answered. (The Codex desktop app can't be "
-                         "watched yet.)",
+                         "add a line here with the model that really answered.",
         "liveWaitHead": "Watching...",
         "liveWaitBrief": "The Codex window is open! Type anything there and I'll tell you right away who answered.",
         "livePendingBrief": "Codex called **{requested}**. Waiting for the answer to finish...",
@@ -211,7 +210,7 @@ HELP: Dict[str, dict] = {
                 {"term": "codex · 자동 탐지", "text": "codex 실행 파일은 알아서 찾아요. 못 찾았을 때만 눌러서 직접 "
                  "골라 주세요."},
             ]},
-            {"icon": "👀", "title": "라이브 모니터 (Codex CLI 전용)", "items": [
+            {"icon": "👀", "title": "라이브 모니터", "items": [
                 "**모니터링 시작**을 누르면 Codex CLI 창이 새로 열려요. 거기서 평소처럼 작업하면 요청마다 한 줄씩 "
                 "쌓여요.",
                 "**세션** 줄에는 `config.toml`에 적힌 **모델**과 **노력** 값이 보여요. 파일이 바뀌면 다시 읽고, "
@@ -222,7 +221,8 @@ HELP: Dict[str, dict] = {
                 "창을 직접 닫아도 모니터가 멈춰요.",
                 "응답 기록은 **보고서 복사**로 클립보드에 넣을 수 있어요. 모니터를 멈춘 뒤 **지우기**를 누르거나 "
                 "**모니터링 시작**을 다시 누르면 지워져요.",
-                "Codex 데스크톱 앱은 지켜볼 수 없어요. 데스크톱 앱을 쓴다면 **검사** 탭으로 확인해 주세요.",
+                "Windows에서는 **Desktop 앱**을 선택해 시작하고 Codex Desktop을 다시 열면 새 요청을 볼 수 있어요. "
+                "**중지**를 누르면 원래 프록시 설정과 인증서를 복원해요.",
             ]},
             {"icon": "🔒", "title": "비용과 프라이버시", "items": [
                 "검사 한 번에 요청 2개(웜업 + 턴)가 나가요. **반복**을 3으로 두면 6개예요. 일반 Codex 사용량에서 "
@@ -298,8 +298,8 @@ HELP: Dict[str, dict] = {
                          "**내 모델 → 다른 모델**일 때만 바꿔치기예요."},
                 {"icon": "🔒", "title": "전부 내 컴퓨터 안에서 처리해요",
                  "text": "프롬프트·파일·답변은 저장하지 않고, 모델 이름과 ID 같은 짧은 기록만 메모리에 둬요."},
-                {"icon": "💻", "title": "Codex CLI 전용이에요",
-                 "text": "데스크톱 앱은 아직 지켜볼 수 없어요. 다 끝나면 중지를 눌러 주세요."},
+                {"icon": "💻", "title": "CLI 또는 Windows Desktop",
+                 "text": "Desktop 앱을 선택했다면 모니터링을 시작한 뒤 Codex Desktop을 다시 열어 주세요."},
             ],
             "skip": "다시 보지 않기",
             "ok": "알겠어요!",
@@ -356,7 +356,7 @@ HELP: Dict[str, dict] = {
                 {"term": "codex · auto-detect", "text": "I find the codex binary by myself. Only if I can't, click "
                  "here and pick it yourself."},
             ]},
-            {"icon": "👀", "title": "Live monitor (Codex CLI only)", "items": [
+            {"icon": "👀", "title": "Live monitor", "items": [
                 "Press **Start monitoring** and a new Codex CLI window opens. Work there as usual; every request "
                 "adds a line here.",
                 "The **Session** row shows the **model** and **effort** set in `config.toml`. I re-read the file "
@@ -367,7 +367,8 @@ HELP: Dict[str, dict] = {
                 "monitor. Closing the Codex window yourself stops the monitor too.",
                 "**Copy report** puts the rows on the clipboard. They're cleared when you press **Clear** (after "
                 "stopping) or start monitoring again.",
-                "The Codex desktop app can't be watched. Desktop users can use the **Check** tab instead.",
+                "On Windows, select **Desktop app**, start monitoring, then restart Codex Desktop. "
+                "**Stop** restores the original proxy settings and certificate.",
             ]},
             {"icon": "🔒", "title": "Cost and privacy", "items": [
                 "Each check sends two requests (warm-up + turn); with **repeat** at 3 that's six. They count like "
@@ -449,8 +450,8 @@ HELP: Dict[str, dict] = {
                 {"icon": "🔒", "title": "Everything stays on your computer",
                  "text": "Prompts, files and answers are never saved; only short records like model names and ids "
                          "are kept in memory."},
-                {"icon": "💻", "title": "Codex CLI only",
-                 "text": "The desktop app can't be watched yet. Press Stop when you're done."},
+                {"icon": "💻", "title": "CLI or Windows Desktop",
+                 "text": "If you selected Desktop app, restart Codex Desktop after starting the monitor."},
             ],
             "skip": "Don't show this again",
             "ok": "Got it!",

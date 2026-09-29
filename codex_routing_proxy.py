@@ -18,6 +18,7 @@ from __future__ import annotations
 import atexit
 import datetime as _dt
 import ipaddress
+import json
 import re
 import shutil
 import socket
@@ -31,6 +32,7 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 try:
     from cryptography import x509
@@ -293,6 +295,85 @@ class _Server(socketserver.ThreadingTCPServer):
     proxy: "InterceptProxy"
 
 
+class SseParser:
+    """Decode HTTP chunk framing and SSE events while the original bytes pass through."""
+
+    def __init__(self, on_event: Callable[[str], None], chunked: bool) -> None:
+        self.on_event = on_event
+        self.chunked = chunked
+        self.wire = bytearray()
+        self.lines = bytearray()
+        self.data: List[str] = []
+        self.event = ""
+        self.remaining = 0
+        self.state = "size"
+        self.done = False
+
+    def _body(self, part: bytes) -> None:
+        self.lines.extend(part)
+        if len(self.lines) > MAX_WS_MESSAGE:
+            self.lines.clear()
+            self.data.clear()
+            raise ValueError("SSE line exceeds limit")
+        while b"\n" in self.lines:
+            raw, _, tail = self.lines.partition(b"\n")
+            self.lines = bytearray(tail)
+            line = raw.rstrip(b"\r").decode("utf-8", "replace")
+            if not line:
+                if self.data:
+                    payload = "\n".join(self.data)
+                    if payload != "[DONE]":
+                        try:
+                            obj = json.loads(payload)
+                            if isinstance(obj, dict):
+                                if self.event and not obj.get("type"):
+                                    obj["type"] = self.event
+                                self.on_event(json.dumps(obj))
+                        except ValueError:
+                            pass
+                self.data.clear()
+                self.event = ""
+            elif line.startswith("data:"):
+                self.data.append(line[5:].lstrip(" "))
+            elif line.startswith("event:"):
+                self.event = line[6:].strip()
+
+    def feed(self, part: bytes) -> None:
+        if not self.chunked:
+            self._body(part)
+            return
+        self.wire.extend(part)
+        while not self.done:
+            if self.state == "size":
+                idx = self.wire.find(b"\r\n")
+                if idx < 0:
+                    break
+                self.remaining = int(bytes(self.wire[:idx]).split(b";", 1)[0], 16)
+                del self.wire[:idx + 2]
+                if self.remaining == 0:
+                    self.done = True
+                    break
+                self.state = "body"
+            elif self.state == "body":
+                if not self.wire:
+                    break
+                n = min(self.remaining, len(self.wire))
+                self._body(bytes(self.wire[:n]))
+                del self.wire[:n]
+                self.remaining -= n
+                if self.remaining == 0:
+                    self.state = "tail"
+            else:
+                if len(self.wire) < 2:
+                    break
+                if self.wire[:2] != b"\r\n":
+                    raise ValueError("invalid HTTP chunk terminator")
+                del self.wire[:2]
+                self.state = "size"
+        if len(self.wire) > MAX_HEAD:
+            raise ValueError("HTTP chunk header exceeds limit")
+
+
 class InterceptProxy:
     """Listens on 127.0.0.1 only. `on_message(WsMessage)` gets every decoded message of a
     WebSocket whose request path starts with `watch_path`; `on_event(name, info)` gets
@@ -300,13 +381,17 @@ class InterceptProxy:
 
     def __init__(self, ca: CertAuthority, on_message: Callable[[WsMessage], None],
                  on_event: Optional[Callable[[str, dict], None]] = None, watch_path: str = RESPONSES_PATH,
-                 upstream_context: Optional[ssl.SSLContext] = None, connect_timeout: float = 20.0) -> None:
+                 upstream_context: Optional[ssl.SSLContext] = None, connect_timeout: float = 20.0,
+                 upstream_proxy: Optional[Tuple[str, int]] = None,
+                 intercept_hosts: Optional[set[str]] = None) -> None:
         self.ca = ca
         self.on_message = on_message
         self.on_event = on_event or (lambda name, info: None)
         self.watch_path = watch_path
         self.upstream_ctx = upstream_context or ssl.create_default_context()
         self.connect_timeout = connect_timeout
+        self.upstream_proxy = upstream_proxy
+        self.intercept_hosts = intercept_hosts
         self.port = 0
         self._server: Optional[_Server] = None
         self._thread: Optional[threading.Thread] = None
@@ -369,16 +454,27 @@ class InterceptProxy:
             line, _ = parse_head(head)
             m = CONNECT_RE.match(line)
             if not m:
-                client.sendall(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                self._forward_http(client, head, rest, line)
                 return
             host, port = m.group(1).strip("[]"), int(m.group(2))
             try:
-                upstream_raw = socket.create_connection((host, port), timeout=self.connect_timeout)
+                upstream_raw = self._connect_upstream(host, port)
             except OSError as e:
                 self.on_event("error", {"host": host, "error": f"connect failed: {e}"})
                 client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
                 return
             self._track(upstream_raw)
+            intercept = self.intercept_hosts is None or any(
+                host.lower() == allowed or host.lower().endswith("." + allowed)
+                for allowed in self.intercept_hosts)
+            if not intercept:
+                client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                if rest:
+                    upstream_raw.sendall(rest)
+                client.settimeout(None)
+                upstream_raw.settimeout(None)
+                self._pump_both(client, upstream_raw, None, None, 0, b"")
+                return
             if rest:  # bytes sent before our 200 cannot be handed to the TLS layer; say so instead of hiding it
                 self.on_event("error", {"host": host, "error": f"{len(rest)} bytes sent before the CONNECT reply were dropped"})
             client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -405,6 +501,48 @@ class InterceptProxy:
                 _close(s)
             self._untrack(*[s for s in (client_tls, upstream, upstream_raw, client) if s is not None])
 
+    def _forward_http(self, client: socket.socket, head: bytes, rest: bytes, line: str) -> None:
+        """Pass plain HTTP through for other Windows apps using the system proxy."""
+        parts = line.split(" ", 2)
+        if len(parts) != 3 or not parts[1].startswith("http://"):
+            client.sendall(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            return
+        target = urlsplit(parts[1])
+        if not target.hostname:
+            return
+        upstream = socket.create_connection(self.upstream_proxy or (target.hostname, target.port or 80),
+                                            timeout=self.connect_timeout)
+        self._track(upstream)
+        try:
+            if self.upstream_proxy is None:
+                path = target.path or "/"
+                if target.query:
+                    path += "?" + target.query
+                head = f"{parts[0]} {path} {parts[2]}\r\n".encode("ascii") + head.split(b"\r\n", 1)[1]
+            upstream.sendall(head + rest)
+            client.settimeout(None)
+            upstream.settimeout(None)
+            self._pump_both(client, upstream, None, None, 0, b"")
+        finally:
+            _close(upstream)
+            self._untrack(upstream)
+
+    def _connect_upstream(self, host: str, port: int) -> socket.socket:
+        if self.upstream_proxy is None:
+            return socket.create_connection((host, port), timeout=self.connect_timeout)
+        sock = socket.create_connection(self.upstream_proxy, timeout=self.connect_timeout)
+        try:
+            authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+            sock.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode("ascii"))
+            head, rest = read_head(sock)
+            status, _ = parse_head(head)
+            if not STATUS_RE.match(status) or STATUS_RE.match(status).group(1) != "200" or rest:
+                raise ConnectionError(f"upstream proxy rejected CONNECT for {host}")
+            return sock
+        except Exception:
+            _close(sock)
+            raise
+
     def _intercept(self, client: ssl.SSLSocket, upstream: ssl.SSLSocket, host: str) -> None:
         """One HTTP/1.1 request on the tunnel: read its head, forward it, then either decode a
         WebSocket or relay bytes blindly. Both sockets are closed by the pumps when done."""
@@ -425,7 +563,8 @@ class InterceptProxy:
                 break
             # A plain request: relay its body and response, then look at the next request on the
             # same tunnel (a WebSocket upgrade may follow on a kept-alive connection).
-            if not self._relay_one_exchange(client, upstream, req_headers, rest):
+            if not self._relay_one_exchange(client, upstream, req_headers, rest, path, host,
+                                            parts[0] if parts else ""):
                 return
         rhead, rrest = read_head(upstream)
         status_line, resp_headers = parse_head(rhead)
@@ -453,12 +592,15 @@ class InterceptProxy:
         self._pump_both(client, upstream, c2s, s2c, conn, rest)
 
     def _relay_one_exchange(self, client: socket.socket, upstream: socket.socket, req_headers: Dict[str, str],
-                            body_start: bytes) -> bool:
+                            body_start: bytes, path: str, host: str, method: str) -> bool:
         """Forward one plain HTTP/1.1 request body and its response. Returns True if the tunnel
         stays open for another request, False if either side closed or framing is unknown."""
-        if req_headers.get("transfer-encoding") or "connection: close" in ("connection: " + req_headers.get("connection", "").lower()):
+        watched = method.upper() == "POST" and path.startswith(self.watch_path)
+        if req_headers.get("transfer-encoding") or (not watched and
+                                                    req_headers.get("connection", "").lower() == "close"):
             self._pump_both(client, upstream, None, None, 0, b"")
             return False
+        request_body = bytearray(body_start[:8 * 1024 * 1024]) if watched else bytearray()
         try:
             remaining = int(req_headers.get("content-length", "0")) - len(body_start)
         except ValueError:
@@ -469,12 +611,53 @@ class InterceptProxy:
             if not chunk:
                 return False
             upstream.sendall(chunk)
+            if watched and len(request_body) < 8 * 1024 * 1024:
+                request_body.extend(chunk[:8 * 1024 * 1024 - len(request_body)])
             remaining -= len(chunk)
         rhead, rrest = read_head(upstream)
         _status, rh = parse_head(rhead)
         client.sendall(rhead)
         if rrest:
             client.sendall(rrest)
+        if watched and "text/event-stream" in rh.get("content-type", "").lower():
+            with self._lock:
+                self._conn_seq += 1
+                conn = self._conn_seq
+            self.on_event("http_open", {"conn": conn, "host": host, "path": path,
+                                        "routing_hint": req_headers.get("x-codex-routing-hint", "")})
+            try:
+                obj = json.loads(request_body)
+                if isinstance(obj, dict):
+                    summary = {"type": "response.create", "model": obj.get("model")}
+                    inputs = obj.get("input")
+                    if isinstance(inputs, list):
+                        summary["input"] = ([{"role": "user"}] if any(
+                            isinstance(item, dict) and str(item.get("role", "")).lower() == "user"
+                            for item in inputs) else [])
+                    self.on_message(WsMessage("c2s", json.dumps(summary), time.time(), conn))
+            except ValueError:
+                self.on_event("parse_lost", {"conn": conn, "direction": "c2s", "error": "HTTP request body unavailable"})
+            finally:
+                request_body.clear()
+            parser = SseParser(lambda body: self.on_message(WsMessage("s2c", body, time.time(), conn)),
+                               "chunked" in rh.get("transfer-encoding", "").lower())
+            try:
+                if rrest:
+                    parser.feed(rrest)
+                remaining_body = int(rh["content-length"]) - len(rrest) if "content-length" in rh else None
+                while not parser.done and (remaining_body is None or remaining_body > 0):
+                    chunk = upstream.recv(min(65536, remaining_body) if remaining_body is not None else 65536)
+                    if not chunk:
+                        break
+                    client.sendall(chunk)
+                    parser.feed(chunk)
+                    if remaining_body is not None:
+                        remaining_body -= len(chunk)
+            except ValueError as e:
+                self.on_event("parse_lost", {"conn": conn, "direction": "s2c", "error": str(e)})
+                self._pump_both(client, upstream, None, None, 0, b"")
+            self.on_event("ws_close", {"conn": conn})
+            return False
         if rh.get("transfer-encoding") or rh.get("connection", "").lower() == "close" or "content-length" not in rh:
             self._pump_both(client, upstream, None, None, 0, b"")  # cannot frame the rest: blind relay
             return False

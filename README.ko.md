@@ -20,7 +20,7 @@ Codex에서 `gpt-6-astra`를 고르면 화면 어디에나 "gpt-6-astra"라고 �
 어떤 모델이 대답했는지 한 문장으로 알려 드려요. 🐾
 
 - **검사**: 버튼 한 번 누르고 30초쯤 기다리면 답이 나와요.
-- **라이브 모니터**: 내가 Codex CLI로 작업하는 동안 응답 하나하나를 옆에서 지켜봐요.
+- **라이브 모니터**: Codex CLI 또는 Windows의 Codex Desktop에서 새로 보내는 요청을 지켜봐요.
 
 ![검사 후의 Codex Routing Detector 창](docs/screenshot-ko.png)
 
@@ -51,7 +51,12 @@ Codex 안에서는 이걸 볼 수 없어요. 화면과 로컬 로그에는 **요
   설치한 뒤 `codex-routing-detector-gui`(창)나 `codex-routing-detector`(터미널)를 실행하세요.
   pywebview가 없으면 단순한 tkinter 창이 대신 열려요(`--tk`로 일부러 열 수도 있어요).
 
-ChatGPT로 로그인된 Codex CLI나 Codex Desktop도 있어야 해요. 라이브 모니터는 CLI가 필요해요.
+Desktop 모드는 현재 [`whale7788/codex-routing-detector`의 `feature/desktop-monitor` 분기](https://github.com/whale7788/codex-routing-detector/tree/feature/desktop-monitor)에 있어요.
+위의 원본 릴리스에는 아직 포함되지 않았어요. 이 분기에서 EXE를 빌드하거나
+`pipx install "git+https://github.com/whale7788/codex-routing-detector.git@feature/desktop-monitor"`로 설치하고
+`pipx inject codex-routing-detector pywebview`를 실행하세요.
+
+ChatGPT로 로그인된 Codex CLI나 Codex Desktop도 있어야 해요. Desktop 모드는 Windows 웹뷰 창에서 사용할 수 있어요.
 
 ## 바로 쓰기 🚀
 
@@ -88,8 +93,10 @@ ChatGPT로 로그인된 Codex CLI나 Codex Desktop도 있어야 해요. 라이�
 - **중지**를 누르면 Codex 창도 닫혀요. Codex를 직접 끝내도(`/exit` 또는 Ctrl-C) 모니터가 끝나요.
   기록은 **지우기**를 누를 때까지 남고, **보고서 복사**로 클립보드에 담을 수 있어요.
 - 오른쪽 위 **?** 버튼을 누르면 짧은 안내를 다시 볼 수 있어요.
-- **Codex 데스크톱 앱은 지켜볼 수 없어요.** 다른 프로그램이 넣어 주는 프록시 설정을 받지 않기
-  때문이에요. 데스크톱 앱 사용자도 검사 탭은 그대로 쓸 수 있어요.
+- **Windows Desktop 모드:** 라이브 탭에서 **Desktop 앱**을 선택하고 모니터링을 시작한 뒤 Codex Desktop을
+  다시 시작하세요. 기존 연결의 요청은 캡처할 수 없어요. 현재 사용 중인 HTTP 프록시는 상위 프록시로 계속
+  사용합니다. **중지**를 누르면 원래 Windows 사용자 프록시와 환경 변수를 복원하고 임시 인증서를 지워요.
+  창이 예기치 않게 종료되어도 별도 감시 프로세스가 복원을 시도해요.
 - Windows에서 테스트했어요. macOS·Linux에서도 터미널을 열어 보긴 하지만, **중지**로 그 창을 닫을
   수는 없으니 Codex를 직접 끝내 주세요.
 

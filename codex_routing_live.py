@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 import queue
 import shlex
 import subprocess
 import sys
+import ssl
 import threading
 import time
 from dataclasses import dataclass, field
@@ -26,6 +28,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import codex_routing_detector as cmc
 import codex_routing_proxy as crp
+import codex_routing_windows as windows
 
 Event = Tuple[str, dict]
 
@@ -348,12 +351,12 @@ class LiveMonitor:
             self.events.put(("codex_exit", rc))
 
     def _proxy_event(self, name: str, info: dict) -> None:
-        if name == "ws_open" and info.get("watched"):
+        if name in ("ws_open", "http_open") and (name == "http_open" or info.get("watched")):
             self._announced.add(info["conn"])
             self.events.put(("ws_open", info))
-            self.events.put(("notice", f"responses WebSocket #{info['conn']} opened"
+            self.events.put(("notice", f"responses {'HTTP/SSE' if name == 'http_open' else 'WebSocket'} #{info['conn']} opened"
                              + (f" (routing hint: {info['routing_hint']})" if info.get("routing_hint") else "")
-                             + ("" if info.get("deflate") else ", no compression")))
+                             + ("" if name == "http_open" or info.get("deflate") else ", no compression")))
         elif name == "ws_close" and info.get("conn") in self._announced:
             self.events.put(("notice", f"WebSocket #{info['conn']} closed"))
         elif name == "parse_lost":
@@ -376,6 +379,52 @@ class LiveMonitor:
         if self.ca is not None:
             self.ca.close()
             self.ca = None
+
+
+class DesktopMonitor(LiveMonitor):
+    """Watch a newly restarted Codex Desktop through a temporary user proxy."""
+
+    def __init__(self) -> None:
+        super().__init__([], "")
+        self.session: Optional[windows.WindowsDesktopSession] = None
+
+    def start(self) -> None:
+        if os.name != "nt":
+            raise RuntimeError("Codex Desktop monitoring currently requires Windows")
+        if not crp.have_crypto():
+            raise RuntimeError("the live monitor needs the cryptography package: pip install cryptography")
+        upstream = windows.previous_proxy()
+        self.ca = crp.CertAuthority()
+        self.proxy = crp.InterceptProxy(self.ca, on_message=lambda m: self.events.put(("message", m)),
+                                        on_event=self._proxy_event, upstream_proxy=upstream,
+                                        intercept_hosts={"chatgpt.com", "api.openai.com"})
+        try:
+            port = self.proxy.start()
+            if upstream == ("127.0.0.1", port):
+                raise RuntimeError("the upstream proxy points to this monitor")
+            thumbprint = hashlib.sha1(ssl.PEM_cert_to_DER_cert(
+                self.ca.cert_path.read_text(encoding="ascii"))).hexdigest().upper()
+            self.session = windows.WindowsDesktopSession(port, self.ca.cert_path, thumbprint)
+            self.session.start()
+        except Exception:
+            self.proxy.stop()
+            self.proxy = None
+            self.ca.close()
+            self.ca = None
+            raise
+        self.started_at = time.time()
+        self.events.put(("notice", f"Desktop proxy listening on 127.0.0.1:{port}"
+                                   + (f" via {upstream[0]}:{upstream[1]}" if upstream else "")))
+        self.events.put(("notice", "Restart Codex Desktop to route new connections through the monitor."))
+
+    def codex_running(self) -> bool:
+        return self.session is not None and self.session.active
+
+    def stop(self) -> None:
+        if self.session is not None:
+            self.session.stop()  # restore user settings before closing the proxy
+            self.session = None
+        super().stop()
 
 
 # ------------------------------------------------------------------ command line
