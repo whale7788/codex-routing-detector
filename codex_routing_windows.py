@@ -1,12 +1,17 @@
 """Temporarily route packaged Codex Desktop through the monitor without changing the system proxy."""
 from __future__ import annotations
 
+import base64
 import csv
 import ctypes
+import hashlib
 import json
 import os
+import re
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional, Tuple
@@ -19,11 +24,98 @@ INTERNET = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 PROXY_NAMES = ("ProxyEnable", "ProxyServer", "AutoConfigURL")
 ENVIRONMENT = "Environment"
 DESKTOP_ENV_NAMES = ("WS_PROXY", "WSS_PROXY", "ws_proxy", "wss_proxy", "CODEX_CA_CERTIFICATE")
+DOTENV_PROXY_NAMES = frozenset(("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "WS_PROXY", "WSS_PROXY",
+                                 "http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy"))
+_DOTENV_KEY = re.compile(rb"^\s*(?:export\s+)?([A-Za-z_][A-Za-z_0-9]*)\s*=")
 
 
 def _backup_path() -> Path:
     root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     return root / "codex-routing-detector" / "desktop-session.json"
+
+
+def _dotenv_path() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / ".env"
+
+
+def _line_key(line: bytes) -> Optional[str]:
+    match = _DOTENV_KEY.match(line)
+    if match:
+        key = match.group(1).decode("ascii")
+        if key in DOTENV_PROXY_NAMES:
+            return key
+    return None
+
+
+def _line_ending(line: bytes) -> bytes:
+    return b"\r\n" if line.endswith(b"\r\n") else (b"\n" if line.endswith(b"\n") else b"")
+
+
+def _write_dotenv(path: Path, data: bytes) -> None:
+    """Replace the file atomically, leaving the old bytes intact if writing fails."""
+    if path.is_symlink():
+        raise RuntimeError(f"{path} is a symlink; cannot safely edit it")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".crd-env-", suffix=".tmp",
+                                         delete=False) as temp:
+            temp_path = Path(temp.name)
+            temp.write(data)
+            temp.flush()
+            os.fsync(temp.fileno())
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def _plan_dotenv(path: Path, url: str) -> Tuple[Optional[dict], Optional[bytes]]:
+    """Change only proxy entries already present; retain no_proxy and every other line."""
+    if not path.exists():
+        return None, None
+    if path.is_symlink():
+        raise RuntimeError(f"{path} is a symlink; cannot safely edit it")
+    original = path.read_bytes()
+    lines = original.splitlines(keepends=True)
+    saved = {}
+    patched = []
+    for line in lines:
+        key = _line_key(line)
+        if key:
+            if key in saved:
+                raise RuntimeError(f"duplicate {key} in {path}; cannot safely monitor Desktop")
+            saved[key] = base64.b64encode(line).decode("ascii")
+            line = key.encode("ascii") + b"=" + url.encode("ascii") + _line_ending(line)
+        patched.append(line)
+    if not saved:
+        return None, None
+    return {"path": str(path), "url": url, "original": saved,
+            "before_sha256": hashlib.sha256(original).hexdigest()}, b"".join(patched)
+
+
+def _restore_dotenv(snapshot: Optional[dict]) -> None:
+    if not snapshot:
+        return
+    path = Path(snapshot["path"])
+    if not path.exists():
+        return
+    original = snapshot["original"]
+    expected = {key: key.encode("ascii") + b"=" + snapshot["url"].encode("ascii")
+                for key in original}
+    changed = False
+    restored = []
+    for line in path.read_bytes().splitlines(keepends=True):
+        key = _line_key(line)
+        ending = _line_ending(line)
+        body = line[:-len(ending)] if ending else line
+        if key in expected and body == expected[key]:
+            line = base64.b64decode(original[key], validate=True)
+            changed = True
+        restored.append(line)
+    if changed:
+        _write_dotenv(path, b"".join(restored))
 
 
 def _read_values(key: str, names: tuple) -> dict:
@@ -167,6 +259,7 @@ def restore(path: Path) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     _write_values(ENVIRONMENT, data["environment"])
     _broadcast_environment()
+    _restore_dotenv(data.get("dotenv"))
     path.unlink(missing_ok=True)
 
 
@@ -184,7 +277,7 @@ def watchdog(path: Path) -> int:
 
 
 class WindowsDesktopSession:
-    """Own only the WebSocket and CA environment values used by new packaged app processes."""
+    """Own the temporary Desktop environment and Codex .env proxy overrides."""
 
     def __init__(self, port: int, cert_path: Path) -> None:
         self.port = port
@@ -201,7 +294,10 @@ class WindowsDesktopSession:
                 raise RuntimeError("another Desktop monitor is already active")
             restore(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        backup = {"pid": os.getpid(), "environment": _read_values(ENVIRONMENT, DESKTOP_ENV_NAMES)}
+        url = f"http://127.0.0.1:{self.port}"
+        dotenv, patched_dotenv = _plan_dotenv(_dotenv_path(), url)
+        backup = {"pid": os.getpid(), "environment": _read_values(ENVIRONMENT, DESKTOP_ENV_NAMES),
+                  "dotenv": dotenv}
         temp = self.path.with_suffix(".tmp")
         temp.write_text(json.dumps(backup), encoding="utf-8")
         temp.replace(self.path)
@@ -213,12 +309,16 @@ class WindowsDesktopSession:
             subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW,
                              close_fds=True)
-            url = f"http://127.0.0.1:{self.port}"
             values = {name: [url, winreg.REG_SZ] for name in DESKTOP_ENV_NAMES
                       if name != "CODEX_CA_CERTIFICATE"}
             values["CODEX_CA_CERTIFICATE"] = [str(self.cert_path), winreg.REG_SZ]
             _write_values(ENVIRONMENT, values)
             _broadcast_environment()
+            if patched_dotenv is not None:
+                dotenv_path = Path(dotenv["path"])
+                if hashlib.sha256(dotenv_path.read_bytes()).hexdigest() != dotenv["before_sha256"]:
+                    raise RuntimeError(f"{dotenv_path} changed while starting Desktop monitoring")
+                _write_dotenv(dotenv_path, patched_dotenv)
             self.active = True
         except Exception:
             restore(self.path)

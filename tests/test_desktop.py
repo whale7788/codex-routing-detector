@@ -208,9 +208,16 @@ class WindowsSession(unittest.TestCase):
         writes = []
         with tempfile.TemporaryDirectory() as folder:
             cert = pathlib.Path(folder) / "ca.pem"
+            dotenv = pathlib.Path(folder) / ".env"
+            proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "WS_PROXY", "WSS_PROXY",
+                          "http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy")
+            initial = (b"".join(f"{key}=http://127.0.0.1:10808\n".encode() for key in proxy_keys)
+                       + b"no_proxy=localhost,127.0.0.1\nOTHER_SETTING=keep\n")
+            dotenv.write_bytes(initial)
             session = windows.WindowsDesktopSession(14334, cert)
             session.path = pathlib.Path(folder) / "desktop-session.json"
             with mock.patch.object(windows, "_read_values", return_value=original), \
+                 mock.patch.object(windows, "_dotenv_path", return_value=dotenv), \
                  mock.patch.object(windows, "_write_values",
                                    side_effect=lambda key, values: writes.append((key, values))), \
                  mock.patch.object(windows, "_broadcast_environment"), \
@@ -220,10 +227,25 @@ class WindowsSession(unittest.TestCase):
                 self.assertEqual(writes[0][0], windows.ENVIRONMENT)
                 self.assertEqual(writes[0][1]["WS_PROXY"][0], "http://127.0.0.1:14334")
                 self.assertEqual(writes[0][1]["CODEX_CA_CERTIFICATE"][0], str(cert))
+                for key in proxy_keys:
+                    self.assertIn(f"{key}=http://127.0.0.1:14334\n".encode(), dotenv.read_bytes())
+                self.assertIn(b"no_proxy=localhost,127.0.0.1\n", dotenv.read_bytes())
+                with dotenv.open("ab") as file:
+                    file.write(b"ADDED_WHILE_MONITORING=keep\n")
                 session.stop()
             self.assertFalse(session.path.exists())
+            self.assertEqual(dotenv.read_bytes(), initial + b"ADDED_WHILE_MONITORING=keep\n")
             self.assertEqual(writes[-1], (windows.ENVIRONMENT, original))
             self.assertTrue(all(key != windows.INTERNET for key, _ in writes))
+
+    def test_dotenv_rejects_duplicate_proxy_keys_before_editing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dotenv = pathlib.Path(folder) / ".env"
+            content = b"HTTP_PROXY=http://127.0.0.1:10808\nHTTP_PROXY=http://127.0.0.1:10808\n"
+            dotenv.write_bytes(content)
+            with self.assertRaisesRegex(RuntimeError, "duplicate HTTP_PROXY"):
+                windows._plan_dotenv(dotenv, "http://127.0.0.1:14334")
+            self.assertEqual(dotenv.read_bytes(), content)
 
     def test_stop_keeps_proxy_and_ca_while_desktop_is_running(self):
         monitor = live.DesktopMonitor()

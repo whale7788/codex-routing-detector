@@ -103,13 +103,16 @@ away.
 - **Windows Desktop mode:** select **Desktop app** in the live tab and press **Start monitoring**.
   Quit Codex Desktop completely, then press **Open Codex Desktop** in the monitor window.
   The monitor temporarily sets your Windows user `WS_PROXY` / `WSS_PROXY` and
-  `CODEX_CA_CERTIFICATE` environment values, then activates the packaged app normally.
+  `CODEX_CA_CERTIFICATE` environment values. If `~/.codex/.env` already contains proxy entries,
+  it temporarily points those entries at the monitor too, because Codex app-server loads them
+  over its inherited environment. The monitor then activates the packaged app normally.
   It leaves the Windows system proxy and certificate stores unchanged. Your existing HTTP proxy
-  remains the upstream hop, so a local proxy
-  such as v2rayN continues to work. Requests on already-open connections cannot be
-  captured. Quit Codex Desktop completely before pressing **Stop** or closing the monitor;
+  remains the upstream hop, so a local proxy such as v2rayN continues to work. Requests on
+  already-open connections cannot be captured. Quit Codex Desktop completely before pressing
+  **Stop** or closing the monitor;
   the monitor keeps its local proxy and certificate file while Desktop is still using them,
-  then restores the previous user environment values.
+  then restores the previous user environment values and `.env` proxy entries. It leaves
+  `no_proxy` / `NO_PROXY` and other `.env` entries alone.
 - Desktop mode reads Codex responses over WebSocket and HTTP/SSE. It displays the requested model
   and the model named in the server response; traffic from other apps to non-OpenAI hosts is
   passed through without decryption. If a request does not reach the local proxy or its response
@@ -146,8 +149,9 @@ Codex usage like any other turn. The live monitor adds nothing.
 
 - **Check**: raw server messages go to a private temp folder, which you can open with **Log
   folder**. Your request bodies, auth headers and cookies are never saved.
-- **Live monitor**: only model names, response ids, statuses, times and error codes, in memory,
-  until you press **Clear** or close the window. Nothing is written to disk.
+- **Live monitor**: only model names, response ids, statuses, times and error codes are kept in
+  memory until you press **Clear** or close the window. Desktop mode also keeps a temporary local
+  recovery snapshot of the proxy values it changes, so it can restore them after a crash.
 
 The details are under [Privacy in detail](#privacy-in-detail).
 
