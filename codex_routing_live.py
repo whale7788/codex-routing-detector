@@ -381,12 +381,12 @@ class LiveMonitor:
 
 
 class DesktopMonitor(LiveMonitor):
-    """Watch a newly launched Codex Desktop without changing Windows user settings."""
+    """Watch a packaged Codex Desktop with temporary per-user WebSocket environment values."""
 
     def __init__(self) -> None:
         super().__init__([], "")
+        self.session: Optional[windows.WindowsDesktopSession] = None
         self._active = False
-        self._launched = False
 
     def start(self) -> None:
         if os.name != "nt":
@@ -407,12 +407,15 @@ class DesktopMonitor(LiveMonitor):
             port = self.proxy.start()
             if upstream == ("127.0.0.1", port):
                 raise RuntimeError("the upstream proxy points to this monitor")
+            self.session = windows.WindowsDesktopSession(port, self.ca.cert_path)
+            self.session.start()
         except Exception:
             if self.proxy is not None:
                 self.proxy.stop()
             self.proxy = None
             self.ca.close()
             self.ca = None
+            self.session = None
             raise
         self._active = True
         self.started_at = time.time()
@@ -425,22 +428,18 @@ class DesktopMonitor(LiveMonitor):
             raise RuntimeError("start Desktop monitoring first")
         if windows.desktop_running():
             raise RuntimeError("quit Codex Desktop completely before opening it through the monitor")
-        executable = windows.desktop_executable()
-        address = f"http://127.0.0.1:{self.proxy.port}"
-        env = dict(os.environ)
-        for name in ("WS_PROXY", "WSS_PROXY", "ws_proxy", "wss_proxy"):
-            env[name] = address
-        env["CODEX_CA_CERTIFICATE"] = str(self.ca.cert_path)
-        proc = subprocess.Popen([str(executable)], cwd=str(executable.parent), env=env)
-        self._launched = True
-        self.events.put(("notice", f"opened Codex Desktop with proxy {address} (pid {proc.pid})"))
+        app_id = windows.activate_desktop()
+        self.events.put(("notice", f"activated {app_id} with WebSocket proxy on 127.0.0.1:{self.proxy.port}"))
 
     def codex_running(self) -> bool:
         return self._active
 
     def stop(self) -> None:
-        if self._launched and windows.desktop_running():
+        if windows.desktop_running():
             raise RuntimeError("quit Codex Desktop completely before stopping the monitor")
+        if self.session is not None:
+            self.session.stop()
+            self.session = None
         self._active = False
         super().stop()
 

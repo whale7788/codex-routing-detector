@@ -5,6 +5,7 @@ import pathlib
 import queue
 import socket
 import ssl
+import tempfile
 import threading
 import time
 import unittest
@@ -179,31 +180,54 @@ class WindowsSession(unittest.TestCase):
             self.assertTrue(windows.desktop_running())
         self.assertIn("app-server", run.call_args.args[0][-1])
 
-    def test_desktop_launcher_passes_websocket_proxy_to_new_process(self):
+    def test_desktop_launcher_activates_packaged_app(self):
         monitor = live.DesktopMonitor()
         monitor._active = True
         monitor.proxy = SimpleNamespace(port=11692)
         monitor.ca = SimpleNamespace(cert_path=pathlib.Path("C:/temp/ca.pem"))
-        executable = pathlib.Path("C:/Program Files/WindowsApps/OpenAI.Codex/app/ChatGPT.exe")
-        with mock.patch.object(windows, "desktop_executable", return_value=executable), \
+        with mock.patch.object(windows, "activate_desktop",
+                               return_value="OpenAI.Codex_2p2nqsd0c76g0!App") as activate, \
              mock.patch.object(windows, "desktop_running", return_value=False), \
-             mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:10808",
-                                          "HTTPS_PROXY": "http://127.0.0.1:10808",
-                                          "ALL_PROXY": "http://127.0.0.1:10808"}), \
-             mock.patch.object(live.subprocess, "Popen", return_value=SimpleNamespace(pid=1234)) as popen:
+             mock.patch.object(live.subprocess, "Popen") as popen:
             monitor.launch_desktop()
-        args, kwargs = popen.call_args
-        self.assertEqual(args[0], [str(executable)])
-        self.assertEqual(kwargs["env"]["WS_PROXY"], "http://127.0.0.1:11692")
-        self.assertEqual(kwargs["env"]["WSS_PROXY"], "http://127.0.0.1:11692")
-        self.assertEqual(kwargs["env"]["HTTPS_PROXY"], "http://127.0.0.1:10808")
-        self.assertEqual(kwargs["env"]["ALL_PROXY"], "http://127.0.0.1:10808")
-        self.assertEqual(kwargs["env"]["CODEX_CA_CERTIFICATE"], "C:\\temp\\ca.pem")
+        activate.assert_called_once_with()
+        popen.assert_not_called()
+        self.assertEqual(monitor.events.get_nowait()[0], "notice")
+
+    def test_package_activation_uses_shell_app_id(self):
+        with mock.patch.object(windows, "desktop_app_id",
+                               return_value="OpenAI.Codex_2p2nqsd0c76g0!App"), \
+             mock.patch.object(windows.os, "startfile") as startfile:
+            self.assertEqual(windows.activate_desktop(), "OpenAI.Codex_2p2nqsd0c76g0!App")
+        startfile.assert_called_once_with("shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App")
+
+    def test_user_environment_is_restored_without_changing_system_proxy(self):
+        original = {"WS_PROXY": ["http://127.0.0.1:10808", 1],
+                    "WSS_PROXY": ["http://127.0.0.1:10808", 1],
+                    "ws_proxy": None, "wss_proxy": None, "CODEX_CA_CERTIFICATE": None}
+        writes = []
+        with tempfile.TemporaryDirectory() as folder:
+            cert = pathlib.Path(folder) / "ca.pem"
+            session = windows.WindowsDesktopSession(14334, cert)
+            session.path = pathlib.Path(folder) / "desktop-session.json"
+            with mock.patch.object(windows, "_read_values", return_value=original), \
+                 mock.patch.object(windows, "_write_values",
+                                   side_effect=lambda key, values: writes.append((key, values))), \
+                 mock.patch.object(windows, "_broadcast_environment"), \
+                 mock.patch.object(windows.subprocess, "Popen"):
+                session.start()
+                self.assertTrue(session.active)
+                self.assertEqual(writes[0][0], windows.ENVIRONMENT)
+                self.assertEqual(writes[0][1]["WS_PROXY"][0], "http://127.0.0.1:14334")
+                self.assertEqual(writes[0][1]["CODEX_CA_CERTIFICATE"][0], str(cert))
+                session.stop()
+            self.assertFalse(session.path.exists())
+            self.assertEqual(writes[-1], (windows.ENVIRONMENT, original))
+            self.assertTrue(all(key != windows.INTERNET for key, _ in writes))
 
     def test_stop_keeps_proxy_and_ca_while_desktop_is_running(self):
         monitor = live.DesktopMonitor()
         monitor._active = True
-        monitor._launched = True
         monitor.proxy = mock.Mock()
         monitor.ca = mock.Mock()
         with mock.patch.object(windows, "desktop_running", side_effect=[True, False]):
@@ -217,15 +241,17 @@ class WindowsSession(unittest.TestCase):
         self.assertIsNone(monitor.proxy)
         self.assertIsNone(monitor.ca)
 
-    def test_desktop_monitor_start_uses_existing_upstream_without_user_settings_changes(self):
-        with mock.patch.object(windows, "previous_proxy", return_value=("127.0.0.1", 10808)):
+    def test_desktop_monitor_keeps_existing_upstream(self):
+        with mock.patch.object(windows, "previous_proxy", return_value=("127.0.0.1", 10808)), \
+             mock.patch.object(windows, "WindowsDesktopSession") as session:
             monitor = live.DesktopMonitor()
             monitor.start()
         try:
             self.assertEqual(monitor.proxy.upstream_proxy, ("127.0.0.1", 10808))
             self.assertGreater(monitor.ca.cert_path.read_text(encoding="ascii").count("BEGIN CERTIFICATE"), 1)
         finally:
-            monitor.stop()
+            with mock.patch.object(windows, "desktop_running", return_value=False):
+                monitor.stop()
 
 
 if __name__ == "__main__":

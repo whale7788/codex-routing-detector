@@ -102,12 +102,14 @@ away.
 - The **?** button at the top right brings back the short guide.
 - **Windows Desktop mode:** select **Desktop app** in the live tab and press **Start monitoring**.
   Quit Codex Desktop completely, then press **Open Codex Desktop** in the monitor window.
-  This launches a new app process with `WS_PROXY` / `WSS_PROXY` and a certificate file
-  for that process. The Windows proxy, proxy environment variables, and certificate stores
-  are not changed. Your existing HTTP proxy remains the upstream hop, so a local proxy
+  The monitor temporarily sets your Windows user `WS_PROXY` / `WSS_PROXY` and
+  `CODEX_CA_CERTIFICATE` environment values, then activates the packaged app normally.
+  It leaves the Windows system proxy and certificate stores unchanged. Your existing HTTP proxy
+  remains the upstream hop, so a local proxy
   such as v2rayN continues to work. Requests on already-open connections cannot be
   captured. Quit Codex Desktop completely before pressing **Stop** or closing the monitor;
-  the monitor keeps its local proxy and certificate file while Desktop is still using them.
+  the monitor keeps its local proxy and certificate file while Desktop is still using them,
+  then restores the previous user environment values.
 - Desktop mode reads Codex responses over WebSocket and HTTP/SSE. It displays the requested model
   and the model named in the server response; traffic from other apps to non-OpenAI hosts is
   passed through without decryption. If a request does not reach the local proxy or its response
