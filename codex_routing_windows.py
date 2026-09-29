@@ -1,16 +1,9 @@
-"""Temporary Windows proxy and CA settings for watching Codex Desktop.
-
-The backup is written before changing user settings. A small child process restores it
-if the GUI disappears without calling stop(). No changes are made on import.
-"""
+"""Read the existing Windows proxy and locate Codex Desktop without changing user settings."""
 from __future__ import annotations
 
-import ctypes
-import json
+import csv
 import os
 import subprocess
-import sys
-import time
 from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import urlsplit
@@ -19,16 +12,7 @@ if os.name == "nt":
     import winreg
 
 INTERNET = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-ENVIRONMENT = "Environment"
-PROXY_NAMES = ("ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL", "AutoDetect")
-ENV_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "WS_PROXY", "WSS_PROXY",
-             "http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy",
-             "CODEX_CA_CERTIFICATE")
-
-
-def _backup_path() -> Path:
-    root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    return root / "codex-routing-detector" / "desktop-session.json"
+PROXY_NAMES = ("ProxyEnable", "ProxyServer", "AutoConfigURL")
 
 
 def _read_values(key: str, names: tuple) -> dict:
@@ -45,45 +29,6 @@ def _read_values(key: str, names: tuple) -> dict:
             except FileNotFoundError:
                 pass
     return out
-
-
-def _write_values(key: str, values: dict) -> None:
-    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_SET_VALUE) as handle:
-        for name, entry in values.items():
-            if entry is None:
-                try:
-                    winreg.DeleteValue(handle, name)
-                except FileNotFoundError:
-                    pass
-            else:
-                winreg.SetValueEx(handle, name, 0, entry[1], entry[0])
-
-
-def _refresh() -> None:
-    # Let WinINet clients and Explorer learn about both the proxy and environment change.
-    wininet = ctypes.windll.wininet
-    wininet.InternetSetOptionW(None, 39, None, 0)
-    wininet.InternetSetOptionW(None, 37, None, 0)
-    result = ctypes.c_ulong()
-    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x1A, 0, "Environment", 2, 2000,
-                                             ctypes.byref(result))
-
-
-def _certutil(*args: str) -> None:
-    run = subprocess.run(["certutil", "-user", *args], stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, timeout=30,
-                         creationflags=subprocess.CREATE_NO_WINDOW)
-    if run.returncode:
-        raise RuntimeError(f"certutil failed ({run.returncode}): {run.stdout[-500:]}")
-
-
-def _cert_in_store(thumbprint: str) -> bool:
-    key = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{thumbprint}"
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key):
-            return True
-    except FileNotFoundError:
-        return False
 
 
 def _proxy_address(value: str) -> Optional[Tuple[str, int]]:
@@ -139,93 +84,24 @@ def desktop_executable() -> Path:
     return executable
 
 
-def _parent_alive(pid: int) -> bool:
-    kernel = ctypes.windll.kernel32
-    handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
-    if not handle:
+def desktop_running() -> bool:
+    """Desktop and its app-server must exit before their proxy and CA are discarded."""
+    if os.name != "nt":
         return False
-    try:
-        return kernel.WaitForSingleObject(handle, 0) == 0x102  # WAIT_TIMEOUT
-    finally:
-        kernel.CloseHandle(handle)
-
-
-def restore(path: Path) -> None:
-    if not path.exists():
-        return
-    data = json.loads(path.read_text(encoding="utf-8"))
-    _write_values(INTERNET, data["internet"])
-    _write_values(ENVIRONMENT, data["environment"])
-    _refresh()
-    if data.get("thumbprint") and _cert_in_store(data["thumbprint"]):
-        _certutil("-delstore", "Root", data["thumbprint"])
-    path.unlink(missing_ok=True)
-
-
-def watchdog(path: Path) -> int:
-    while path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if not _parent_alive(int(data["pid"])):
-                restore(path)
-                return 0
-        except (OSError, ValueError, KeyError):
-            pass
-        time.sleep(2)
-    return 0
-
-
-class WindowsDesktopSession:
-    def __init__(self, port: int, cert_path: Path, thumbprint: str) -> None:
-        self.port = port
-        self.cert_path = cert_path
-        self.thumbprint = thumbprint
-        self.path = _backup_path()
-        self.active = False
-
-    def start(self) -> None:
-        if os.name != "nt":
-            raise RuntimeError("Desktop monitoring requires Windows")
-        if self.path.exists():
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            if _parent_alive(int(data["pid"])):
-                raise RuntimeError("another Desktop monitor is already active")
-            restore(self.path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        backup = {"pid": os.getpid(), "thumbprint": self.thumbprint,
-                  "internet": _read_values(INTERNET, PROXY_NAMES),
-                  "environment": _read_values(ENVIRONMENT, ENV_NAMES)}
-        temp = self.path.with_suffix(".tmp")
-        temp.write_text(json.dumps(backup), encoding="utf-8")
-        temp.replace(self.path)
-        if getattr(sys, "frozen", False):
-            command = [sys.executable, "--desktop-watchdog", str(self.path)]
-        else:
-            command = [sys.executable, "-m", "codex_routing_windows", "--watchdog", str(self.path)]
-        try:
-            subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW,
-                             close_fds=True)
-            _certutil("-addstore", "-f", "Root", str(self.cert_path))
-            address = f"127.0.0.1:{self.port}"
-            _write_values(INTERNET, {"ProxyEnable": [1, winreg.REG_DWORD],
-                                     "ProxyServer": [address, winreg.REG_SZ],
-                                     "AutoConfigURL": None, "AutoDetect": [0, winreg.REG_DWORD]})
-            url = f"http://{address}"
-            _write_values(ENVIRONMENT, {name: [url, winreg.REG_SZ] for name in ENV_NAMES
-                                        if name != "CODEX_CA_CERTIFICATE"})
-            _write_values(ENVIRONMENT, {"CODEX_CA_CERTIFICATE": [str(self.cert_path), winreg.REG_SZ]})
-            _refresh()
-            self.active = True
-        except Exception:
-            restore(self.path)
-            raise
-
-    def stop(self) -> None:
-        if self.active:
-            restore(self.path)
-            self.active = False
-
-
-if __name__ == "__main__" and len(sys.argv) == 3 and sys.argv[1] == "--watchdog":
-    sys.exit(watchdog(Path(sys.argv[2])))
+    run = subprocess.run(["tasklist", "/FI", "IMAGENAME eq ChatGPT.exe", "/FO", "CSV", "/NH"],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+    if run.returncode:
+        raise RuntimeError(f"could not check Codex Desktop processes: {run.stderr.strip()}")
+    if any(row and row[0].lower() == "chatgpt.exe" for row in csv.reader(run.stdout.splitlines())):
+        return True
+    app_server = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+         "Get-CimInstance Win32_Process -Filter \"Name = 'codex.exe'\" | "
+         "Where-Object { $_.CommandLine -match '(?<!\\S)app-server(?!\\S)' } | "
+         "Select-Object -First 1 -ExpandProperty ProcessId"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10,
+        creationflags=subprocess.CREATE_NO_WINDOW)
+    if app_server.returncode:
+        raise RuntimeError(f"could not check Codex app-server processes: {app_server.stderr.strip()}")
+    return bool(app_server.stdout.strip())

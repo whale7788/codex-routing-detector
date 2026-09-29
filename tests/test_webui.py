@@ -177,7 +177,7 @@ class CheckFlow(WebUiBase):
 
 @unittest.skipUnless(crp.have_crypto(), "cryptography not installed")
 class LiveFlow(WebUiBase):
-    def test_desktop_mode_uses_its_own_monitor_and_dialog(self):
+    def test_desktop_mode_starts_without_windows_settings_dialog(self):
         class FakeDesktopMonitor:
             def __init__(self):
                 self.events = queue.Queue()
@@ -199,8 +199,7 @@ class LiveFlow(WebUiBase):
         self.assertEqual(self.app.build_vm()["live"]["mode"], "desktop")
         with mock.patch.object(webui.live, "DesktopMonitor", FakeDesktopMonitor):
             ask = self.app.request_live()
-            self.assertIn("Windows user proxy", ask["body"])
-            self.app.start_live_confirmed(skip=False)
+            self.assertIsNone(ask)
             self.assertIsInstance(self.app.monitor, FakeDesktopMonitor)
             self.assertIn("Desktop", self.app.build_vm()["live"]["status"])
             self.assertIn("12345 → 127.0.0.1:10808", self.app.build_vm()["live"]["status"])
@@ -208,6 +207,19 @@ class LiveFlow(WebUiBase):
             self.assertTrue(self.app.monitor.launched)
             self.app.stop_live()
         self.assertIsNone(self.app.monitor)
+
+    def test_desktop_stop_waits_for_codex_to_exit(self):
+        class ActiveDesktop:
+            proxy = None
+            def codex_running(self):
+                return True
+            def stop(self):
+                raise RuntimeError("quit Codex Desktop completely before stopping the monitor")
+        self.app.set_live_mode("desktop")
+        self.app.monitor = ActiveDesktop()
+        self.app.stop_live_confirmed()
+        self.assertIsInstance(self.app.monitor, ActiveDesktop)
+        self.assertIn("quit Codex Desktop", self.app.build_vm()["live"]["notes"])
 
     def start(self):
         self.app.start_live(confirm=False)

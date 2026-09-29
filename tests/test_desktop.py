@@ -5,7 +5,6 @@ import pathlib
 import queue
 import socket
 import ssl
-import tempfile
 import threading
 import time
 import unittest
@@ -170,49 +169,63 @@ class HttpProxyCapture(unittest.TestCase):
             server_ca.close()
 
 
-@unittest.skipUnless(os.name == "nt", "Windows user settings only")
+@unittest.skipUnless(os.name == "nt", "Windows Desktop only")
 class WindowsSession(unittest.TestCase):
+    def test_desktop_process_check_includes_app_server_after_window_closes(self):
+        completed = lambda output: SimpleNamespace(returncode=0, stdout=output, stderr="")
+        with mock.patch.object(windows.subprocess, "run",
+                               side_effect=[completed("INFO: No tasks are running\n"),
+                                            completed("40160\n")]) as run:
+            self.assertTrue(windows.desktop_running())
+        self.assertIn("app-server", run.call_args.args[0][-1])
+
     def test_desktop_launcher_passes_websocket_proxy_to_new_process(self):
         monitor = live.DesktopMonitor()
-        monitor.session = SimpleNamespace(active=True)
+        monitor._active = True
         monitor.proxy = SimpleNamespace(port=11692)
         monitor.ca = SimpleNamespace(cert_path=pathlib.Path("C:/temp/ca.pem"))
         executable = pathlib.Path("C:/Program Files/WindowsApps/OpenAI.Codex/app/ChatGPT.exe")
         with mock.patch.object(windows, "desktop_executable", return_value=executable), \
+             mock.patch.object(windows, "desktop_running", return_value=False), \
+             mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:10808",
+                                          "HTTPS_PROXY": "http://127.0.0.1:10808",
+                                          "ALL_PROXY": "http://127.0.0.1:10808"}), \
              mock.patch.object(live.subprocess, "Popen", return_value=SimpleNamespace(pid=1234)) as popen:
             monitor.launch_desktop()
         args, kwargs = popen.call_args
         self.assertEqual(args[0], [str(executable)])
         self.assertEqual(kwargs["env"]["WS_PROXY"], "http://127.0.0.1:11692")
         self.assertEqual(kwargs["env"]["WSS_PROXY"], "http://127.0.0.1:11692")
+        self.assertEqual(kwargs["env"]["HTTPS_PROXY"], "http://127.0.0.1:10808")
+        self.assertEqual(kwargs["env"]["ALL_PROXY"], "http://127.0.0.1:10808")
         self.assertEqual(kwargs["env"]["CODEX_CA_CERTIFICATE"], "C:\\temp\\ca.pem")
 
-    def test_start_and_stop_restore_previous_values(self):
-        original = {"ProxyEnable": [1, 4], "ProxyServer": ["127.0.0.1:10808", 1]}
-        prior_env = {"HTTPS_PROXY": ["http://127.0.0.1:10808", 1]}
-        writes = []
-        with tempfile.TemporaryDirectory() as folder:
-            cert = pathlib.Path(folder) / "ca.pem"
-            cert.write_text("test", encoding="ascii")
-            session = windows.WindowsDesktopSession(12345, cert, "AABBCC")
-            session.path = pathlib.Path(folder) / "session.json"
-            def read(key, names):
-                return dict(original if key == windows.INTERNET else prior_env)
-            with mock.patch.object(windows, "_read_values", side_effect=read), \
-                 mock.patch.object(windows, "_write_values", side_effect=lambda k, v: writes.append((k, v))), \
-                 mock.patch.object(windows, "_certutil") as certutil, \
-                 mock.patch.object(windows, "_cert_in_store", return_value=True), \
-                 mock.patch.object(windows, "_refresh"), \
-                 mock.patch.object(windows.subprocess, "Popen"):
-                session.start()
-                self.assertTrue(session.active)
-                self.assertEqual(json.loads(session.path.read_text())["internet"], original)
-                self.assertEqual(writes[0][1]["ProxyServer"][0], "127.0.0.1:12345")
-                session.stop()
-                self.assertFalse(session.path.exists())
-                self.assertEqual(writes[-2][1], original)
-                self.assertEqual(writes[-1][1], prior_env)
-                self.assertEqual(certutil.call_count, 2)
+    def test_stop_keeps_proxy_and_ca_while_desktop_is_running(self):
+        monitor = live.DesktopMonitor()
+        monitor._active = True
+        monitor._launched = True
+        monitor.proxy = mock.Mock()
+        monitor.ca = mock.Mock()
+        with mock.patch.object(windows, "desktop_running", side_effect=[True, False]):
+            with self.assertRaisesRegex(RuntimeError, "quit Codex Desktop"):
+                monitor.stop()
+            self.assertTrue(monitor.codex_running())
+            monitor.proxy.stop.assert_not_called()
+            monitor.ca.close.assert_not_called()
+            monitor.stop()
+        self.assertFalse(monitor.codex_running())
+        self.assertIsNone(monitor.proxy)
+        self.assertIsNone(monitor.ca)
+
+    def test_desktop_monitor_start_uses_existing_upstream_without_user_settings_changes(self):
+        with mock.patch.object(windows, "previous_proxy", return_value=("127.0.0.1", 10808)):
+            monitor = live.DesktopMonitor()
+            monitor.start()
+        try:
+            self.assertEqual(monitor.proxy.upstream_proxy, ("127.0.0.1", 10808))
+            self.assertGreater(monitor.ca.cert_path.read_text(encoding="ascii").count("BEGIN CERTIFICATE"), 1)
+        finally:
+            monitor.stop()
 
 
 if __name__ == "__main__":

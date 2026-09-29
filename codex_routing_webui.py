@@ -97,10 +97,8 @@ UI: Dict[str, Dict[str, str]] = {
         "desktopLaunch": "Codex Desktop 열기",
         "desktopIdleBrief": "모니터링을 시작한 뒤 Codex Desktop을 종료하고 이 창의 열기 버튼으로 다시 실행하세요.",
         "desktopWaitBrief": "Codex Desktop을 완전히 종료한 뒤 이 창의 'Codex Desktop 열기'를 누르세요. 새 요청을 기다립니다.",
-        "desktopConfirmTitle": "Desktop 모니터링을 시작할까요?",
-        "desktopConfirmBody": "Windows 사용자 프록시와 환경 변수를 잠시 변경하고 임시 인증서를 신뢰 저장소에 추가합니다. 통신은 Codex → 로컬 모니터 → 기존 프록시 순서로 흐릅니다. 시작한 뒤 Codex Desktop을 완전히 종료하고 이 창의 열기 버튼으로 다시 실행하세요. 중지하면 원래 설정으로 복원합니다.",
-        "desktopStopBody": "Windows 프록시 설정과 인증서를 원래대로 되돌립니다. Desktop 앱은 계속 열려 있습니다. 중지할까요?",
-        "desktopCloseBody": "창을 닫으면 Windows 프록시 설정과 인증서를 원래대로 되돌립니다. Desktop 앱은 계속 열려 있습니다. 닫을까요?",
+        "desktopStopBody": "먼저 Codex Desktop을 완전히 종료하세요. 종료된 뒤 로컬 모니터와 임시 인증서 파일을 정리합니다.",
+        "desktopCloseBody": "먼저 Codex Desktop을 완전히 종료하세요. 종료된 뒤 모니터 창을 닫을 수 있습니다.",
         "liveChipOff": "꺼짐", "liveChipOn": "감시 중", "liveChipBad": "바꿔치기", "liveChipWarn": "확인 필요",
         "liveStatusOff": "대기 중",
         "helpUsage": "기본 사용법", "helpTerms": "용어 설명", "helpGuide": "라이브 모니터 안내",
@@ -138,10 +136,8 @@ UI: Dict[str, Dict[str, str]] = {
         "desktopLaunch": "Open Codex Desktop",
         "desktopIdleBrief": "Start monitoring, quit Codex Desktop, then reopen it with the button here.",
         "desktopWaitBrief": "Quit Codex Desktop completely, then press Open Codex Desktop here. Waiting for new requests.",
-        "desktopConfirmTitle": "Watch Codex Desktop?",
-        "desktopConfirmBody": "This temporarily changes your Windows user proxy and proxy environment variables and trusts a temporary certificate. Traffic goes Codex → local monitor → your existing proxy. After starting, quit Codex Desktop completely and reopen it with the button here. Stop restores the original settings.",
-        "desktopStopBody": "Restore the original Windows proxy settings and certificate? Codex Desktop will stay open.",
-        "desktopCloseBody": "Closing restores the original Windows proxy settings and certificate. Codex Desktop will stay open. Close?",
+        "desktopStopBody": "Quit Codex Desktop completely first. Then the local monitor and temporary certificate file can be removed.",
+        "desktopCloseBody": "Quit Codex Desktop completely first. Then the monitor window can close.",
         "liveChipOff": "Off", "liveChipOn": "Watching", "liveChipBad": "Rerouted", "liveChipWarn": "Needs a look",
         "liveStatusOff": "idle",
         "helpUsage": "How to use", "helpTerms": "Glossary", "helpGuide": "Live monitor guide",
@@ -1770,9 +1766,8 @@ class WebApp:
                 self.push()
                 return None
             if self.live_mode == "desktop":
-                return {"mode": "start", "title": self.u("desktopConfirmTitle"),
-                        "body": self.u("desktopConfirmBody"), "checkbox": None,
-                        "ok": self.u("liveStart"), "cancel": self.u("cancel")}
+                self._start_live()
+                return None
             # The live dialog asks for consent to the local proxy and certificate, so only its own
             # "don't ask again" (skip_confirm_live) skips it, not the check dialog's (skip_confirm).
             ask = self.confirm_live and not self.settings.get("skip_confirm_live")
@@ -1881,13 +1876,18 @@ class WebApp:
             self._end_live("stopped")
         self.push()
 
-    def _end_live(self, how: str) -> None:
+    def _end_live(self, how: str) -> bool:
         mon = self.monitor
         if mon is None:
-            return
-        mon.stop()
+            return True
+        try:
+            mon.stop()
+        except RuntimeError as e:
+            self._live_note(str(e))
+            return False
         self.monitor = None
         self.live_ended = how
+        return True
 
     def _live_note(self, text: str) -> None:
         self.live_lines.append(f"{time.strftime('%H:%M:%S')}  {text}")
@@ -1954,8 +1954,11 @@ class WebApp:
 
     def confirm_close(self) -> None:
         with self.lock:
-            self._end_live("stopped")
-        self._destroy()
+            stopped = self._end_live("stopped")
+        if stopped:
+            self._destroy()
+        else:
+            self.push()
 
     def shutdown(self) -> None:
         self._closed = True
@@ -2056,9 +2059,6 @@ def feed_fake_live(app: WebApp) -> None:
 # ------------------------------------------------------------------ entry point
 def main(argv: Optional[List[str]] = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
-    if len(args) == 2 and args[0] == "--desktop-watchdog":
-        import codex_routing_windows as windows
-        return windows.watchdog(Path(args[1]))
     ap = argparse.ArgumentParser(prog="codex-routing-detector-gui", add_help=True)
     ap.add_argument("--lang", default=None, choices=["en", "ko"], help="interface language (remembered)")
     ap.add_argument("--fake", action="store_true", help=argparse.SUPPRESS)

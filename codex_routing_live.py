@@ -7,14 +7,13 @@ CA. Every message on the responses WebSocket is decoded in memory; only model na
 response ids, statuses, timestamps and error codes are kept. Prompts, file contents and the
 model's answers pass through and are never stored.
 
-Only the Codex CLI can be watched: the Codex desktop app is a packaged (MSIX) application
-that does not take environment variables from another program.
+On Windows, the web UI can also launch a new Codex Desktop process with WebSocket proxy
+settings scoped to that process.
 """
 from __future__ import annotations
 
 import json
 import os
-import hashlib
 import queue
 import shlex
 import subprocess
@@ -382,11 +381,12 @@ class LiveMonitor:
 
 
 class DesktopMonitor(LiveMonitor):
-    """Watch a newly restarted Codex Desktop through a temporary user proxy."""
+    """Watch a newly launched Codex Desktop without changing Windows user settings."""
 
     def __init__(self) -> None:
         super().__init__([], "")
-        self.session: Optional[windows.WindowsDesktopSession] = None
+        self._active = False
+        self._launched = False
 
     def start(self) -> None:
         if os.name != "nt":
@@ -395,23 +395,26 @@ class DesktopMonitor(LiveMonitor):
             raise RuntimeError("the live monitor needs the cryptography package: pip install cryptography")
         upstream = windows.previous_proxy()
         self.ca = crp.CertAuthority()
-        self.proxy = crp.InterceptProxy(self.ca, on_message=lambda m: self.events.put(("message", m)),
-                                        on_event=self._proxy_event, upstream_proxy=upstream,
-                                        intercept_hosts={"chatgpt.com", "api.openai.com"})
         try:
+            # CODEX_CA_CERTIFICATE can replace the default trust set for WebSocket TLS.
+            # Keep the system roots alongside this session's proxy CA for direct traffic.
+            with self.ca.cert_path.open("a", encoding="ascii") as bundle:
+                for der in ssl.create_default_context().get_ca_certs(binary_form=True):
+                    bundle.write(ssl.DER_cert_to_PEM_cert(der))
+            self.proxy = crp.InterceptProxy(self.ca, on_message=lambda m: self.events.put(("message", m)),
+                                            on_event=self._proxy_event, upstream_proxy=upstream,
+                                            intercept_hosts={"chatgpt.com", "api.openai.com"})
             port = self.proxy.start()
             if upstream == ("127.0.0.1", port):
                 raise RuntimeError("the upstream proxy points to this monitor")
-            thumbprint = hashlib.sha1(ssl.PEM_cert_to_DER_cert(
-                self.ca.cert_path.read_text(encoding="ascii"))).hexdigest().upper()
-            self.session = windows.WindowsDesktopSession(port, self.ca.cert_path, thumbprint)
-            self.session.start()
         except Exception:
-            self.proxy.stop()
+            if self.proxy is not None:
+                self.proxy.stop()
             self.proxy = None
             self.ca.close()
             self.ca = None
             raise
+        self._active = True
         self.started_at = time.time()
         self.events.put(("notice", f"Desktop proxy listening on 127.0.0.1:{port}"
                                    + (f" via {upstream[0]}:{upstream[1]}" if upstream else "")))
@@ -420,25 +423,25 @@ class DesktopMonitor(LiveMonitor):
     def launch_desktop(self) -> None:
         if not self.codex_running() or self.proxy is None or self.ca is None:
             raise RuntimeError("start Desktop monitoring first")
+        if windows.desktop_running():
+            raise RuntimeError("quit Codex Desktop completely before opening it through the monitor")
         executable = windows.desktop_executable()
         address = f"http://127.0.0.1:{self.proxy.port}"
         env = dict(os.environ)
-        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "WS_PROXY", "WSS_PROXY",
-                     "http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy"):
+        for name in ("WS_PROXY", "WSS_PROXY", "ws_proxy", "wss_proxy"):
             env[name] = address
         env["CODEX_CA_CERTIFICATE"] = str(self.ca.cert_path)
-        env.pop("NO_PROXY", None)
-        env.pop("no_proxy", None)
         proc = subprocess.Popen([str(executable)], cwd=str(executable.parent), env=env)
+        self._launched = True
         self.events.put(("notice", f"opened Codex Desktop with proxy {address} (pid {proc.pid})"))
 
     def codex_running(self) -> bool:
-        return self.session is not None and self.session.active
+        return self._active
 
     def stop(self) -> None:
-        if self.session is not None:
-            self.session.stop()  # restore user settings before closing the proxy
-            self.session = None
+        if self._launched and windows.desktop_running():
+            raise RuntimeError("quit Codex Desktop completely before stopping the monitor")
+        self._active = False
         super().stop()
 
 
