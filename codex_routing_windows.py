@@ -122,6 +122,23 @@ def previous_proxy() -> Optional[Tuple[str, int]]:
     return None
 
 
+def desktop_executable() -> Path:
+    """Find the installed Codex Desktop executable without assuming a package version."""
+    if os.name != "nt":
+        raise RuntimeError("Codex Desktop launching requires Windows")
+    command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+               "(Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | "
+               "Select-Object -First 1).InstallLocation"]
+    run = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         text=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
+    if run.returncode or not run.stdout.strip():
+        raise RuntimeError("Codex Desktop package was not found")
+    executable = Path(run.stdout.strip().splitlines()[-1]) / "app" / "ChatGPT.exe"
+    if not executable.is_file():
+        raise RuntimeError(f"Codex Desktop executable was not found: {executable}")
+    return executable
+
+
 def _parent_alive(pid: int) -> bool:
     kernel = ctypes.windll.kernel32
     handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE

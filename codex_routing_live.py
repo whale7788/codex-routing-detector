@@ -415,7 +415,22 @@ class DesktopMonitor(LiveMonitor):
         self.started_at = time.time()
         self.events.put(("notice", f"Desktop proxy listening on 127.0.0.1:{port}"
                                    + (f" via {upstream[0]}:{upstream[1]}" if upstream else "")))
-        self.events.put(("notice", "Restart Codex Desktop to route new connections through the monitor."))
+        self.events.put(("notice", "Quit Codex Desktop, then use Open Codex Desktop here to start it through the monitor."))
+
+    def launch_desktop(self) -> None:
+        if not self.codex_running() or self.proxy is None or self.ca is None:
+            raise RuntimeError("start Desktop monitoring first")
+        executable = windows.desktop_executable()
+        address = f"http://127.0.0.1:{self.proxy.port}"
+        env = dict(os.environ)
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "WS_PROXY", "WSS_PROXY",
+                     "http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy"):
+            env[name] = address
+        env["CODEX_CA_CERTIFICATE"] = str(self.ca.cert_path)
+        env.pop("NO_PROXY", None)
+        env.pop("no_proxy", None)
+        proc = subprocess.Popen([str(executable)], cwd=str(executable.parent), env=env)
+        self.events.put(("notice", f"opened Codex Desktop with proxy {address} (pid {proc.pid})"))
 
     def codex_running(self) -> bool:
         return self.session is not None and self.session.active

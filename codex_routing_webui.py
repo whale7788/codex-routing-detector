@@ -94,9 +94,11 @@ UI: Dict[str, Dict[str, str]] = {
         "statusIdle": "준비됨", "statusDone": "{secs}초 소요",
         "liveStart": "모니터링 시작", "liveStop": "중지",
         "liveCli": "CLI 세션", "liveDesktop": "Desktop 앱",
-        "desktopIdleBrief": "Desktop 앱을 다시 시작한 뒤 새 요청을 이 화면에서 확인하세요.",
+        "desktopLaunch": "Codex Desktop 열기",
+        "desktopIdleBrief": "모니터링을 시작한 뒤 Codex Desktop을 종료하고 이 창의 열기 버튼으로 다시 실행하세요.",
+        "desktopWaitBrief": "Codex Desktop을 완전히 종료한 뒤 이 창의 'Codex Desktop 열기'를 누르세요. 새 요청을 기다립니다.",
         "desktopConfirmTitle": "Desktop 모니터링을 시작할까요?",
-        "desktopConfirmBody": "Windows 사용자 프록시와 환경 변수를 잠시 변경하고 임시 인증서를 신뢰 저장소에 추가합니다. 기존 프록시는 계속 사용합니다. 시작한 뒤 Codex Desktop을 다시 시작하세요. 중지하면 원래 설정으로 복원합니다.",
+        "desktopConfirmBody": "Windows 사용자 프록시와 환경 변수를 잠시 변경하고 임시 인증서를 신뢰 저장소에 추가합니다. 통신은 Codex → 로컬 모니터 → 기존 프록시 순서로 흐릅니다. 시작한 뒤 Codex Desktop을 완전히 종료하고 이 창의 열기 버튼으로 다시 실행하세요. 중지하면 원래 설정으로 복원합니다.",
         "desktopStopBody": "Windows 프록시 설정과 인증서를 원래대로 되돌립니다. Desktop 앱은 계속 열려 있습니다. 중지할까요?",
         "desktopCloseBody": "창을 닫으면 Windows 프록시 설정과 인증서를 원래대로 되돌립니다. Desktop 앱은 계속 열려 있습니다. 닫을까요?",
         "liveChipOff": "꺼짐", "liveChipOn": "감시 중", "liveChipBad": "바꿔치기", "liveChipWarn": "확인 필요",
@@ -133,9 +135,11 @@ UI: Dict[str, Dict[str, str]] = {
         "statusIdle": "ready", "statusDone": "done in {secs}s",
         "liveStart": "Start monitoring", "liveStop": "Stop",
         "liveCli": "CLI session", "liveDesktop": "Desktop app",
-        "desktopIdleBrief": "Restart Codex Desktop after starting, then new requests will appear here.",
+        "desktopLaunch": "Open Codex Desktop",
+        "desktopIdleBrief": "Start monitoring, quit Codex Desktop, then reopen it with the button here.",
+        "desktopWaitBrief": "Quit Codex Desktop completely, then press Open Codex Desktop here. Waiting for new requests.",
         "desktopConfirmTitle": "Watch Codex Desktop?",
-        "desktopConfirmBody": "This temporarily changes your Windows user proxy and proxy environment variables and trusts a temporary certificate. Your existing proxy stays upstream. Restart Codex Desktop after starting. Stop restores the original settings.",
+        "desktopConfirmBody": "This temporarily changes your Windows user proxy and proxy environment variables and trusts a temporary certificate. Traffic goes Codex → local monitor → your existing proxy. After starting, quit Codex Desktop completely and reopen it with the button here. Stop restores the original settings.",
         "desktopStopBody": "Restore the original Windows proxy settings and certificate? Codex Desktop will stay open.",
         "desktopCloseBody": "Closing restores the original Windows proxy settings and certificate. Codex Desktop will stay open. Close?",
         "liveChipOff": "Off", "liveChipOn": "Watching", "liveChipBad": "Rerouted", "liveChipWarn": "Needs a look",
@@ -548,6 +552,7 @@ button:disabled { cursor: default; }
         <div class="brief" id="l-brief"></div>
         <div class="actionrow">
           <button class="cta" id="l-cta"></button>
+          <button class="quietbtn hidden" id="l-launch"></button>
           <button class="quietbtn" id="l-mode-cli"></button>
           <button class="quietbtn" id="l-mode-desktop"></button>
           <span class="folderline" id="l-folderline"><span id="l-folderlabel"></span> <span class="path" id="l-folder" title=""></span></span>
@@ -782,6 +787,8 @@ function render(vm) {
   lcta.textContent = l.on ? s.liveStop : s.liveStart;
   lcta.classList.toggle("stop", l.on);
   lcta.disabled = !l.canStart && !l.on;
+  $("l-launch").textContent = s.desktopLaunch;
+  $("l-launch").classList.toggle("hidden", l.mode !== "desktop" || !l.on);
   $("l-mode-cli").textContent = s.liveCli;
   $("l-mode-desktop").textContent = s.liveDesktop;
   $("l-mode-cli").disabled = l.on;
@@ -1079,6 +1086,7 @@ function wire() {
   });
   $("l-mode-cli").onclick = () => call(api().set_live_mode("cli"));
   $("l-mode-desktop").onclick = () => call(api().set_live_mode("desktop"));
+  $("l-launch").onclick = () => call(api().launch_desktop());
   $("l-folder").onclick = () => { if (!crd.vm.live.on) call(api().pick_live_dir()); };
   $("cfgpill").onclick = () => call(api().open_config());
   $("btn-livecopy").onclick = () => call(api().copy_live_report()).then((r) => { if (r) copyText(r.text, "live", r.msg); });
@@ -1455,7 +1463,8 @@ class WebApp:
         if "UNKNOWN" in verdicts:
             return ("warn", self.u("liveChipWarn"), self.v("liveUnknownHead"),
                     self.v("liveUnknownBrief", requested=requested))
-        return "running", self.u("liveChipOn"), self.v("liveWaitHead"), self.v("liveWaitBrief")
+        brief = self.u("desktopWaitBrief") if self.live_mode == "desktop" else self.v("liveWaitBrief")
+        return "running", self.u("liveChipOn"), self.v("liveWaitHead"), brief
 
     def _live_rows(self) -> List[dict]:
         kind_name = {"warmup": self.s("kind_warmup"), "turn": self.s("kind_turn"), "error": "-"}
@@ -1472,7 +1481,11 @@ class WebApp:
         mon = self.monitor
         if mon is not None and mon.proxy is not None:
             if isinstance(mon, live.DesktopMonitor):
-                return f"Desktop · 127.0.0.1:{mon.proxy.port}"
+                upstream = mon.proxy.upstream_proxy
+                route = f"127.0.0.1:{mon.proxy.port}"
+                if upstream:
+                    route += f" → {upstream[0]}:{upstream[1]}"
+                return f"Desktop · {route}"
             pid = (mon.proc.pid if mon.proc is not None else 0) or "?"
             return f"pid {pid} · 127.0.0.1:{mon.proxy.port}"
         if self.live_ended is None:
@@ -1728,6 +1741,17 @@ class WebApp:
             if self.monitor is None and mode in ("cli", "desktop") and (mode != "desktop" or os.name == "nt"):
                 self.live_mode = mode
                 self._clear_live()
+        self.push()
+
+    def launch_desktop(self) -> None:
+        with self.lock:
+            mon = self.monitor
+            if not isinstance(mon, live.DesktopMonitor):
+                return
+            try:
+                mon.launch_desktop()
+            except Exception as e:
+                self._live_note(f"Desktop launch failed: {type(e).__name__}: {e}")
         self.push()
 
     def request_live(self) -> Optional[dict]:
@@ -2014,7 +2038,8 @@ class JsApi:
 
     _METHODS = ("init", "set_lang", "guide_closed", "open_repo", "open_update", "open_config",
                 "request_check", "run_check_confirmed", "cancel_check", "set_option", "pick_codex",
-                "copy_report", "save_json", "open_logs", "set_live_mode", "request_live", "start_live_confirmed",
+                "copy_report", "save_json", "open_logs", "set_live_mode", "launch_desktop",
+                "request_live", "start_live_confirmed",
                 "stop_live_confirmed", "confirm_close", "pick_live_dir", "copy_live_report", "clear_live")
 
     def __init__(self, app: WebApp) -> None:

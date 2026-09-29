@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import codex_routing_live as live
@@ -171,6 +172,21 @@ class HttpProxyCapture(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "Windows user settings only")
 class WindowsSession(unittest.TestCase):
+    def test_desktop_launcher_passes_websocket_proxy_to_new_process(self):
+        monitor = live.DesktopMonitor()
+        monitor.session = SimpleNamespace(active=True)
+        monitor.proxy = SimpleNamespace(port=11692)
+        monitor.ca = SimpleNamespace(cert_path=pathlib.Path("C:/temp/ca.pem"))
+        executable = pathlib.Path("C:/Program Files/WindowsApps/OpenAI.Codex/app/ChatGPT.exe")
+        with mock.patch.object(windows, "desktop_executable", return_value=executable), \
+             mock.patch.object(live.subprocess, "Popen", return_value=SimpleNamespace(pid=1234)) as popen:
+            monitor.launch_desktop()
+        args, kwargs = popen.call_args
+        self.assertEqual(args[0], [str(executable)])
+        self.assertEqual(kwargs["env"]["WS_PROXY"], "http://127.0.0.1:11692")
+        self.assertEqual(kwargs["env"]["WSS_PROXY"], "http://127.0.0.1:11692")
+        self.assertEqual(kwargs["env"]["CODEX_CA_CERTIFICATE"], "C:\\temp\\ca.pem")
+
     def test_start_and_stop_restore_previous_values(self):
         original = {"ProxyEnable": [1, 4], "ProxyServer": ["127.0.0.1:10808", 1]}
         prior_env = {"HTTPS_PROXY": ["http://127.0.0.1:10808", 1]}

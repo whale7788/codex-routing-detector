@@ -102,8 +102,11 @@ away.
 - The **?** button at the top right brings back the short guide.
 - **Windows Desktop mode:** select **Desktop app** in the live tab and press **Start monitoring**.
   The app temporarily sets the Windows user proxy and proxy environment variables to its local
-  listener, and trusts a session certificate. Restart Codex Desktop after starting; requests on
-  already-open connections cannot be captured. Your previous HTTP proxy is used as the upstream
+  listener, and trusts a session certificate. Quit Codex Desktop completely, then press
+  **Open Codex Desktop** in the monitor window. This launches the new app process with
+  `WS_PROXY` / `WSS_PROXY` and the session certificate explicitly set; reopening it through
+  the ordinary Windows shortcut may inherit stale proxy variables. Requests on already-open
+  connections cannot be captured. Your previous HTTP proxy is used as the upstream
   hop, so this also works with a local proxy such as v2rayN. **Stop** restores the original user
   settings and removes the temporary certificate, without closing Desktop. A separate watchdog
   restores them if the monitor exits unexpectedly.

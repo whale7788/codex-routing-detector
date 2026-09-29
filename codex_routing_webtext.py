@@ -221,7 +221,8 @@ HELP: Dict[str, dict] = {
                 "창을 직접 닫아도 모니터가 멈춰요.",
                 "응답 기록은 **보고서 복사**로 클립보드에 넣을 수 있어요. 모니터를 멈춘 뒤 **지우기**를 누르거나 "
                 "**모니터링 시작**을 다시 누르면 지워져요.",
-                "Windows에서는 **Desktop 앱**을 선택해 시작하고 Codex Desktop을 다시 열면 새 요청을 볼 수 있어요. "
+                "Windows에서는 **Desktop 앱**을 선택해 시작하고 Codex Desktop을 완전히 종료한 뒤 "
+                "모니터 창의 **Codex Desktop 열기**로 다시 실행하면 새 요청을 볼 수 있어요. "
                 "**중지**를 누르면 원래 프록시 설정과 인증서를 복원해요.",
             ]},
             {"icon": "🔒", "title": "비용과 프라이버시", "items": [
@@ -299,7 +300,7 @@ HELP: Dict[str, dict] = {
                 {"icon": "🔒", "title": "전부 내 컴퓨터 안에서 처리해요",
                  "text": "프롬프트·파일·답변은 저장하지 않고, 모델 이름과 ID 같은 짧은 기록만 메모리에 둬요."},
                 {"icon": "💻", "title": "CLI 또는 Windows Desktop",
-                 "text": "Desktop 앱을 선택했다면 모니터링을 시작한 뒤 Codex Desktop을 다시 열어 주세요."},
+                 "text": "Desktop 앱을 선택했다면 시작 후 Codex Desktop을 종료하고 모니터 창의 열기 버튼으로 다시 실행하세요."},
             ],
             "skip": "다시 보지 않기",
             "ok": "알겠어요!",
@@ -367,7 +368,8 @@ HELP: Dict[str, dict] = {
                 "monitor. Closing the Codex window yourself stops the monitor too.",
                 "**Copy report** puts the rows on the clipboard. They're cleared when you press **Clear** (after "
                 "stopping) or start monitoring again.",
-                "On Windows, select **Desktop app**, start monitoring, then restart Codex Desktop. "
+                "On Windows, select **Desktop app**, start monitoring, quit Codex Desktop, then "
+                "press **Open Codex Desktop** in the monitor window. "
                 "**Stop** restores the original proxy settings and certificate.",
             ]},
             {"icon": "🔒", "title": "Cost and privacy", "items": [
@@ -451,7 +453,7 @@ HELP: Dict[str, dict] = {
                  "text": "Prompts, files and answers are never saved; only short records like model names and ids "
                          "are kept in memory."},
                 {"icon": "💻", "title": "CLI or Windows Desktop",
-                 "text": "If you selected Desktop app, restart Codex Desktop after starting the monitor."},
+                 "text": "If you selected Desktop app, quit it and reopen it with the button in the monitor window."},
             ],
             "skip": "Don't show this again",
             "ok": "Got it!",

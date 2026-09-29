@@ -184,14 +184,17 @@ class LiveFlow(WebUiBase):
                 self.proxy = None
                 self.proc = None
                 self.active = False
+                self.launched = False
             def start(self):
-                self.proxy = type("Proxy", (), {"port": 12345})()
+                self.proxy = type("Proxy", (), {"port": 12345, "upstream_proxy": ("127.0.0.1", 10808)})()
                 self.active = True
             def codex_running(self):
                 return self.active
             def stop(self):
                 self.active = False
                 self.proxy = None
+            def launch_desktop(self):
+                self.launched = True
         self.app.set_live_mode("desktop")
         self.assertEqual(self.app.build_vm()["live"]["mode"], "desktop")
         with mock.patch.object(webui.live, "DesktopMonitor", FakeDesktopMonitor):
@@ -200,6 +203,9 @@ class LiveFlow(WebUiBase):
             self.app.start_live_confirmed(skip=False)
             self.assertIsInstance(self.app.monitor, FakeDesktopMonitor)
             self.assertIn("Desktop", self.app.build_vm()["live"]["status"])
+            self.assertIn("12345 → 127.0.0.1:10808", self.app.build_vm()["live"]["status"])
+            self.app.launch_desktop()
+            self.assertTrue(self.app.monitor.launched)
             self.app.stop_live()
         self.assertIsNone(self.app.monitor)
 
